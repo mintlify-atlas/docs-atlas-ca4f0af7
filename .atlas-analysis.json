@@ -1,0 +1,179 @@
+{
+  "projectType": "data-platform",
+  "projectName": "Apache Druid",
+  "projectDescription": "A high performance real-time analytics database designed for fast queries and data ingestion.",
+  "theme": "sequoia",
+  "primaryColor": "#2adae3",
+  "lightColor": "#248795",
+  "darkColor": "#1c2029",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "design/architecture"
+            ]
+          },
+          {
+            "group": "Design & Architecture",
+            "pages": [
+              "design/segments",
+              "design/storage",
+              "design/broker",
+              "design/coordinator",
+              "design/historical",
+              "design/overlord",
+              "design/middlemanager",
+              "design/indexer",
+              "design/router"
+            ]
+          },
+          {
+            "group": "Data Ingestion",
+            "pages": [
+              "ingestion/index",
+              "ingestion/data-formats",
+              "ingestion/schema-model",
+              "ingestion/schema-design",
+              "ingestion/streaming",
+              "ingestion/native-batch",
+              "ingestion/kafka",
+              "ingestion/kinesis",
+              "ingestion/supervisor"
+            ]
+          },
+          {
+            "group": "Querying",
+            "pages": [
+              "querying/sql",
+              "querying/datasource",
+              "querying/aggregations",
+              "querying/filters",
+              "querying/joins",
+              "querying/lookups",
+              "querying/multi-value-dimensions",
+              "querying/granularities"
+            ]
+          },
+          {
+            "group": "Data Management",
+            "pages": [
+              "data-management/index",
+              "data-management/compaction",
+              "data-management/retention",
+              "data-management/update",
+              "data-management/delete"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/high-availability",
+              "operations/metrics",
+              "operations/security",
+              "operations/performance-tuning",
+              "operations/web-console",
+              "operations/kubernetes"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/index",
+              "configuration/extensions",
+              "configuration/logging"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "HTTP APIs",
+            "pages": [
+              "api/overview",
+              "api/sql-api",
+              "api/json-querying",
+              "api/tasks",
+              "api/supervisor",
+              "api/data-management",
+              "api/retention-rules",
+              "api/compaction",
+              "api/service-status"
+            ]
+          },
+          {
+            "group": "SQL & JDBC",
+            "pages": [
+              "api/sql-jdbc",
+              "api/sql-ingestion"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Tutorials",
+        "groups": [
+          {
+            "group": "Getting Started Tutorials",
+            "pages": [
+              "tutorials/index",
+              "tutorials/docker",
+              "tutorials/cluster"
+            ]
+          },
+          {
+            "group": "Ingestion Tutorials",
+            "pages": [
+              "tutorials/tutorial-batch",
+              "tutorials/tutorial-kafka",
+              "tutorials/tutorial-append-data",
+              "tutorials/tutorial-update-data",
+              "tutorials/tutorial-compaction"
+            ]
+          },
+          {
+            "group": "Query Tutorials",
+            "pages": [
+              "tutorials/tutorial-query",
+              "tutorials/tutorial-rollup",
+              "tutorials/tutorial-retention"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Real-time and batch data ingestion",
+    "Columnar storage format optimized for analytics",
+    "Distributed query processing with SQL support",
+    "Automatic data summarization (rollup)",
+    "Built-in web console for cluster management",
+    "Streaming data ingestion from Kafka and Kinesis",
+    "Sub-second query latency at scale",
+    "Horizontal scalability and high availability"
+  ],
+  "publicApiSurface": [
+    "SQL API - /druid/v2/sql",
+    "Native Query API - /druid/v2",
+    "Task API - /druid/indexer/v1/task",
+    "Supervisor API - /druid/indexer/v1/supervisor",
+    "Data Management API - /druid/coordinator/v1/datasources",
+    "Retention Rules API - /druid/coordinator/v1/rules",
+    "Service Status API - /status",
+    "JDBC Driver - org.apache.druid.sql.avatica.DruidAvaticaHandler",
+    "Coordinator service",
+    "Overlord service",
+    "Broker service",
+    "Historical service",
+    "MiddleManager service",
+    "Router service"
+  ]
+}
