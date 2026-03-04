@@ -1,0 +1,283 @@
+---
+title: Compaction
+description: Optimize Apache Druid segment sizes through compaction. Learn about compaction strategies, use cases, and how compaction improves query performance.
+---
+
+Query performance in Apache Druid depends on optimally sized segments. Compaction is a strategy to optimize segment size by reading existing segments for a time interval and combining them into a new "compacted" set of segments.
+
+## What is Compaction?
+
+Compaction tasks read an existing set of segments for a given time interval and combine the data into a new set of segments. This process:
+- Creates fewer, larger segments (reducing per-segment overhead)
+- Or creates more optimally-sized segments from oversized ones
+- Improves query performance through reduced processing and memory overhead
+- Does not modify underlying data by default (unless configured)
+
+<Note>
+Compaction is a special type of ingestion task that reads from a Druid datasource and writes back to the same datasource.
+</Note>
+
+## When to Use Compaction
+
+### Suboptimal Segment Sizes
+
+Consider compaction when segments are not optimally sized:
+
+<AccordionGroup>
+  <Accordion title="Streaming Ingestion Creates Small Segments">
+    With streaming ingestion, out-of-order data arrival can create many small segments that should be combined.
+    
+    **Solution**: Use automatic compaction to periodically combine recent segments into optimal sizes.
+  </Accordion>
+  
+  <Accordion title="Append Operations Fragment Data">
+    Using `appendToExisting` with native batch ingestion can create suboptimal segments over time.
+    
+    **Solution**: Compact the affected time intervals to reorganize data.
+  </Accordion>
+  
+  <Accordion title="Parallel Indexing Creates Too Many Segments">
+    When `index_parallel` tasks create many small segments due to high parallelism.
+    
+    **Solution**: Compact to merge segments to target size of ~5 million rows.
+  </Accordion>
+  
+  <Accordion title="Misconfigured Ingestion Creates Oversized Segments">
+    Segments that are too large increase memory pressure and slow query performance.
+    
+    **Solution**: Recompact with proper `maxRowsPerSegment` configuration.
+  </Accordion>
+</AccordionGroup>
+
+### Data Optimization
+
+Compaction can also modify data to improve performance:
+
+- **Adjust granularity**: Change segment or query granularity for older data
+- **Reorder dimensions**: Optimize sorting to reduce segment size
+- **Remove columns**: Drop unused dimensions during compaction
+- **Apply aggregations**: Implement rollup metrics for historical data
+- **Change partitioning**: Move from dynamic to hash/range partitioning for perfect rollup
+
+<Warning>
+Compaction doesn't improve performance in all cases. If you rewrite data with each ingestion task, you don't need compaction. See [Segment Optimization](../operations/segment-optimization) for guidance.
+</Warning>
+
+## Compaction Methods
+
+### Automatic Compaction (Recommended)
+
+Automatic compaction should be your first choice for most use cases.
+
+<Steps>
+  <Step title="Coordinator Identifies Segments">
+    The Coordinator uses its segment search policy to identify segments that need compaction, starting from newest to oldest.
+  </Step>
+  
+  <Step title="Compaction Tasks Created">
+    When uncompacted or differently-compacted segments are found, the Coordinator submits compaction tasks for those time intervals.
+  </Step>
+  
+  <Step title="Tasks Execute Automatically">
+    Compaction tasks run automatically on a schedule without manual intervention.
+  </Step>
+</Steps>
+
+See [Automatic Compaction](./automatic-compaction) for configuration details.
+
+### Manual Compaction
+
+Use manual compaction when you need more control:
+
+- **Faster completion**: Run multiple concurrent tasks for more intervals when automatic compaction is too slow
+- **Specific time ranges**: Force compaction for particular intervals
+- **Out-of-order compaction**: Compact data not chronologically
+- **One-time operations**: Reindex with specific configurations
+
+See [Manual Compaction](./manual-compaction) for task configuration.
+
+## How Compaction Handles Data
+
+### Data Consistency
+
+During compaction:
+- Druid overwrites original segments with compacted segments
+- Time intervals are locked to ensure data consistency
+- By default, underlying data is not modified
+- Atomic updates ensure seamless query transitions
+
+<Note>
+You can configure `dropExisting: true` in `ioConfig` to replace all existing segments fully contained by the interval. This is a beta feature.
+</Note>
+
+### Conflict Resolution
+
+If an ingestion task needs to write to a segment locked for compaction:
+- By default: ingestion supersedes compaction, compaction task fails
+- For manual compaction: adjust input spec interval to avoid conflicts
+- For automatic compaction: set `skipOffsetFromLatest` to reduce conflict chances
+- Alternative: set compaction priority higher than ingestion (advanced)
+
+See [Avoid Conflicts](./automatic-compaction#avoid-conflicts-with-ingestion) for strategies.
+
+## Granularity Handling
+
+### Segment Granularity
+
+By default, Druid retains the original segment granularity:
+
+- **Same granularity, no overlap**: Separate tasks for each granularity
+- **Different granularity with overlap**: Druid uses the closest granularity level
+
+**Example**: Compacting a DAY segment (2020-01-01 to 2020-01-02) with a MONTH segment (2020-01-01 to 2020-02-01) results in a MONTH granularity segment (2020-01-01 to 2020-02-01).
+
+<Warning>
+You can override segment granularity in `granularitySpec`, but this changes how data is partitioned by time.
+</Warning>
+
+### Query Granularity
+
+By default, Druid retains query granularity:
+
+- **Different query granularities**: Druid chooses the finest granularity
+- **Example**: Combining DAY and MINUTE granularity results in MINUTE granularity
+
+<Note>
+In Apache Druid 0.21.0 and prior, compacted segments used default granularity of NONE regardless of original query granularity.
+</Note>
+
+**Important**: When changing to a coarser query granularity (e.g., MONTH to YEAR), running a kill task to remove overshadowed segments causes permanent loss of finer granularity data.
+
+## Dimension and Schema Handling
+
+### Dimension Merging
+
+Druid supports different schemas across segments:
+- Compacted segments include all dimensions from input segments
+- Recent segments' dimension order and types take precedence
+- Custom `dimensionsSpec` can control ordering and types
+
+### Rollup Behavior
+
+Druid only rolls up output segments when `rollup` is set for ALL input segments.
+
+<Steps>
+  <Step title="Check Current Rollup Status">
+    Use Segment Metadata Queries with `analysisTypes` to verify if segments are rolled up.
+  </Step>
+  
+  <Step title="Configure Rollup in Compaction">
+    Set `rollup: true` in granularitySpec only if all input segments support rollup.
+  </Step>
+  
+  <Step title="Verify Output">
+    Confirm compacted segments have the expected rollup configuration.
+  </Step>
+</Steps>
+
+See [Roll-up](../ingestion/rollup) for more details.
+
+## Example Configurations
+
+### Basic Segment Consolidation
+
+Combine small segments without changing data:
+
+```json
+{
+  "dataSource": "wikipedia",
+  "granularitySpec": {
+    "segmentGranularity": "DAY"
+  }
+}
+```
+
+### Change Query Granularity for Old Data
+
+Reduce storage for older data by changing granularity:
+
+```json
+{
+  "dataSource": "metrics_data",
+  "granularitySpec": {
+    "segmentGranularity": "DAY",
+    "queryGranularity": "HOUR"
+  },
+  "skipOffsetFromLatest": "P30D"
+}
+```
+
+### Apply Range Partitioning
+
+Optimize for read-time performance:
+
+```json
+{
+  "dataSource": "events",
+  "tuningConfig": {
+    "partitionsSpec": {
+      "type": "range",
+      "partitionDimensions": ["country", "city", "device"],
+      "targetRowsPerSegment": 5000000
+    }
+  }
+}
+```
+
+### Remove Unused Dimensions
+
+Drop columns no longer needed:
+
+```json
+{
+  "dataSource": "clickstream",
+  "dimensionsSpec": {
+    "dimensionExclusions": ["deprecated_field", "temp_column"]
+  },
+  "granularitySpec": {
+    "segmentGranularity": "DAY",
+    "queryGranularity": "MINUTE",
+    "rollup": false
+  }
+}
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Enable Auto-Compaction" icon="robot">
+    Set up automatic compaction for all datasources to maintain optimal segment sizes continuously.
+  </Card>
+  
+  <Card title="Configure Skip Offset" icon="clock">
+    Use `skipOffsetFromLatest` to avoid compacting recently ingested data that may receive late arrivals.
+  </Card>
+  
+  <Card title="Specify Full Schema" icon="list-check">
+    Set `granularitySpec`, `dimensionsSpec`, and `metricsSpec` to non-null values to optimize performance.
+  </Card>
+  
+  <Card title="Monitor Segment Sizes" icon="chart-line">
+    Target 5 million rows per segment for optimal query performance.
+  </Card>
+</CardGroup>
+
+## Learn More
+
+<CardGroup cols={2}>
+  <Card title="Automatic Compaction" icon="rotate" href="./automatic-compaction">
+    Configure and manage auto-compaction
+  </Card>
+  
+  <Card title="Manual Compaction" icon="hand" href="./manual-compaction">
+    Submit one-time compaction tasks
+  </Card>
+  
+  <Card title="Segment Optimization" icon="gauge-high" href="../operations/segment-optimization">
+    Guidelines for optimal segment sizing
+  </Card>
+  
+  <Card title="Coordinator Process" icon="server" href="../design/coordinator#automatic-compaction">
+    How the Coordinator plans compaction
+  </Card>
+</CardGroup>

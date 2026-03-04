@@ -1,0 +1,500 @@
+---
+title: Druid Schema Model
+description: Understand datasources, primary timestamp, dimensions, and metrics in Apache Druid
+---
+
+Druid stores data in datasources, which are similar to tables in a traditional relational database management system (RDBMS). Druid's data model shares similarities with both relational and timeseries data models.
+
+## Primary Timestamp
+
+Druid schemas must always include a primary timestamp. The primary timestamp is fundamental to how Druid operates:
+
+<CardGroup cols={2}>
+  <Card title="Partitioning & Sorting" icon="chart-line">
+    Druid uses the primary timestamp to partition and sort your data
+  </Card>
+  <Card title="Query Performance" icon="gauge-high">
+    Enables rapid identification and retrieval of data within time ranges
+  </Card>
+  <Card title="Data Management" icon="calendar">
+    Powers time-based operations like dropping chunks and retention rules
+  </Card>
+  <Card title="Storage Column" icon="database">
+    Always stored in the `__time` column in your datasource
+  </Card>
+</CardGroup>
+
+### Configuration
+
+Druid parses the primary timestamp based on the `timestampSpec` configuration at ingestion time.
+
+<CodeGroup>
+```json ISO Format
+{
+  "timestampSpec": {
+    "column": "timestamp",
+    "format": "iso"
+  }
+}
+```
+
+```json Millis Format
+{
+  "timestampSpec": {
+    "column": "event_time",
+    "format": "millis"
+  }
+}
+```
+
+```json Custom Format
+{
+  "timestampSpec": {
+    "column": "date",
+    "format": "yyyy-MM-dd HH:mm:ss"
+  }
+}
+```
+</CodeGroup>
+
+<Info>
+  Regardless of the source field for the primary timestamp, Druid always stores the timestamp in the `__time` column.
+</Info>
+
+### Additional Timestamp Operations
+
+You can control other important timestamp-based operations in the `granularitySpec`:
+
+<ParamField path="segmentGranularity" type="string">
+  Controls how data is partitioned into time chunks (e.g., HOUR, DAY, WEEK, MONTH)
+</ParamField>
+
+<ParamField path="queryGranularity" type="string">
+  Controls the timestamp resolution in query results (e.g., NONE, SECOND, MINUTE)
+</ParamField>
+
+<Note>
+  If you have more than one timestamp column, you can store the others as [secondary timestamps](/ingestion/schema-design#secondary-timestamps).
+</Note>
+
+## Dimensions
+
+Dimensions are columns that Druid stores "as-is". You can use dimensions for any purpose at query time.
+
+### Dimension Capabilities
+
+<Tabs>
+  <Tab title="Filtering">
+    Filter your data based on dimension values:
+    
+    ```sql
+    SELECT * FROM datasource WHERE country = 'USA'
+    ```
+  </Tab>
+  
+  <Tab title="Grouping">
+    Group your results by dimension values:
+    
+    ```sql
+    SELECT country, COUNT(*) FROM datasource GROUP BY country
+    ```
+  </Tab>
+  
+  <Tab title="Aggregation">
+    Apply aggregators to dimensions:
+    
+    ```sql
+    SELECT region, SUM(revenue) FROM datasource GROUP BY region
+    ```
+  </Tab>
+</Tabs>
+
+### Dimension Types
+
+Druid supports several dimension types:
+
+<AccordionGroup>
+  <Accordion title="String Dimensions" icon="text">
+    The default and most common dimension type.
+    
+    ```json
+    {
+      "dimensionsSpec": {
+        "dimensions": [
+          "country",
+          "city",
+          "user_id"
+        ]
+      }
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Long Dimensions" icon="hashtag">
+    For integer values.
+    
+    ```json
+    {
+      "dimensionsSpec": {
+        "dimensions": [
+          {
+            "type": "long",
+            "name": "user_age"
+          }
+        ]
+      }
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Double Dimensions" icon="percent">
+    For floating-point values.
+    
+    ```json
+    {
+      "dimensionsSpec": {
+        "dimensions": [
+          {
+            "type": "double",
+            "name": "latitude"
+          }
+        ]
+      }
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Float Dimensions" icon="percent">
+    For single-precision floating-point values.
+    
+    ```json
+    {
+      "dimensionsSpec": {
+        "dimensions": [
+          {
+            "type": "float",
+            "name": "price"
+          }
+        ]
+      }
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Multi-Value Dimensions" icon="list">
+    Arrays of strings for one-to-many relationships.
+    
+    ```json
+    {
+      "dimensionsSpec": {
+        "dimensions": [
+          {
+            "type": "string",
+            "name": "tags",
+            "multiValueHandling": "ARRAY"
+          }
+        ]
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Rollup and Dimensions
+
+<Info>
+  If you disable rollup, Druid treats the set of dimensions like a set of columns to ingest. The dimensions behave exactly as you would expect from any database that does not support a rollup feature.
+</Info>
+
+At ingestion time, you configure dimensions in the `dimensionsSpec`:
+
+<CodeGroup>
+```json With Schema Discovery
+{
+  "dimensionsSpec": {
+    "useSchemaDiscovery": true,
+    "dimensionExclusions": [
+      "timestamp",
+      "value"
+    ]
+  }
+}
+```
+
+```json Explicit Dimensions
+{
+  "dimensionsSpec": {
+    "dimensions": [
+      "country",
+      "city",
+      "page",
+      {
+        "type": "long",
+        "name": "user_id"
+      }
+    ]
+  }
+}
+```
+</CodeGroup>
+
+## Metrics
+
+Metrics are columns that Druid stores in an aggregated form. Metrics are most useful when you enable rollup.
+
+### When to Use Metrics
+
+<CardGroup cols={2}>
+  <Card title="Rollup" icon="compress">
+    Collapse dimensions while aggregating metric values to reduce row count
+  </Card>
+  <Card title="Performance" icon="bolt">
+    Pre-compute aggregations at ingestion time for faster queries
+  </Card>
+</CardGroup>
+
+### How Metrics Work with Rollup
+
+When you enable rollup, Druid combines multiple rows with the same timestamp and dimension values:
+
+<Steps>
+  <Step title="Group Rows">
+    Rows with identical timestamp and dimension values are grouped together
+  </Step>
+  
+  <Step title="Aggregate Metrics">
+    Metric aggregation functions are applied to each group
+  </Step>
+  
+  <Step title="Store Single Row">
+    The grouped data is stored as a single row with aggregated metrics
+  </Step>
+</Steps>
+
+### Common Metric Types
+
+<Tabs>
+  <Tab title="Count">
+    Count the number of rows:
+    
+    ```json
+    {
+      "type": "count",
+      "name": "count"
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Sum">
+    Sum numeric values:
+    
+    ```json
+    {
+      "type": "longSum",
+      "name": "total_events",
+      "fieldName": "events"
+    }
+    ```
+    
+    Also available: `doubleSum`, `floatSum`
+  </Tab>
+  
+  <Tab title="Min/Max">
+    Track minimum or maximum values:
+    
+    ```json
+    {
+      "type": "longMin",
+      "name": "min_value",
+      "fieldName": "value"
+    }
+    ```
+    
+    Also available: `longMax`, `doubleMin`, `doubleMax`
+  </Tab>
+  
+  <Tab title="First/Last">
+    Track first or last values:
+    
+    ```json
+    {
+      "type": "stringFirst",
+      "name": "first_status",
+      "fieldName": "status"
+    }
+    ```
+  </Tab>
+</Tabs>
+
+### Example: NetFlow Data with Rollup
+
+<CodeGroup>
+```json Without Rollup (Multiple Rows)
+[
+  {"timestamp": "2024-01-01T00:00:00Z", "srcIP": "192.168.1.1", "dstIP": "10.0.0.1", "packets": 100, "bytes": 5000},
+  {"timestamp": "2024-01-01T00:00:00Z", "srcIP": "192.168.1.1", "dstIP": "10.0.0.1", "packets": 150, "bytes": 7500},
+  {"timestamp": "2024-01-01T00:00:00Z", "srcIP": "192.168.1.1", "dstIP": "10.0.0.1", "packets": 200, "bytes": 10000}
+]
+```
+
+```json With Rollup (Single Row)
+{
+  "timestamp": "2024-01-01T00:00:00Z",
+  "srcIP": "192.168.1.1",
+  "dstIP": "10.0.0.1",
+  "total_packets": 450,
+  "total_bytes": 22500,
+  "count": 3
+}
+```
+</CodeGroup>
+
+### Metrics Configuration
+
+At ingestion time, you configure metrics in the `metricsSpec`:
+
+<CodeGroup>
+```json Basic Metrics
+{
+  "metricsSpec": [
+    {
+      "type": "count",
+      "name": "count"
+    },
+    {
+      "type": "longSum",
+      "name": "total_packets",
+      "fieldName": "packets"
+    },
+    {
+      "type": "longSum",
+      "name": "total_bytes",
+      "fieldName": "bytes"
+    }
+  ]
+}
+```
+
+```json Advanced Metrics
+{
+  "metricsSpec": [
+    {
+      "type": "count",
+      "name": "count"
+    },
+    {
+      "type": "doubleSum",
+      "name": "revenue",
+      "fieldName": "price"
+    },
+    {
+      "type": "doubleMin",
+      "name": "min_price",
+      "fieldName": "price"
+    },
+    {
+      "type": "doubleMax",
+      "name": "max_price",
+      "fieldName": "price"
+    },
+    {
+      "type": "hyperUnique",
+      "name": "unique_users",
+      "fieldName": "user_id"
+    }
+  ]
+}
+```
+</CodeGroup>
+
+<Warning>
+  Metrics can only be aggregated at query time (not filtered or grouped by). If you need to filter or group by a column, define it as a dimension instead.
+</Warning>
+
+## Benefits of Pre-Aggregation
+
+Even without rollup, pre-aggregating metrics at ingestion time can provide benefits:
+
+<AccordionGroup>
+  <Accordion title="Query Performance" icon="gauge-high">
+    Some aggregators, especially approximate ones like HyperLogLog and Theta sketches, compute faster at query time if they are partially computed at ingestion time.
+  </Accordion>
+  
+  <Accordion title="Storage Efficiency" icon="hard-drive">
+    Approximate aggregators often use less storage than the raw data they represent.
+  </Accordion>
+  
+  <Accordion title="Flexibility" icon="wand-magic-sparkles">
+    You can still compute additional aggregations at query time on pre-aggregated data.
+  </Accordion>
+</AccordionGroup>
+
+## Schema Configuration Example
+
+<CodeGroup>
+```json Complete Schema Example
+{
+  "dataSchema": {
+    "dataSource": "web_traffic",
+    "timestampSpec": {
+      "column": "timestamp",
+      "format": "iso"
+    },
+    "dimensionsSpec": {
+      "dimensions": [
+        "page",
+        "country",
+        "device_type",
+        {
+          "type": "long",
+          "name": "user_id"
+        }
+      ]
+    },
+    "metricsSpec": [
+      {
+        "type": "count",
+        "name": "count"
+      },
+      {
+        "type": "longSum",
+        "name": "page_views",
+        "fieldName": "views"
+      },
+      {
+        "type": "doubleSum",
+        "name": "session_duration",
+        "fieldName": "duration"
+      },
+      {
+        "type": "hyperUnique",
+        "name": "unique_users",
+        "fieldName": "user_id"
+      }
+    ],
+    "granularitySpec": {
+      "segmentGranularity": "DAY",
+      "queryGranularity": "MINUTE",
+      "rollup": true
+    }
+  }
+}
+```
+</CodeGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Schema Design" icon="sitemap" href="/ingestion/schema-design">
+    Learn best practices for designing your schema
+  </Card>
+  <Card title="Data Rollup" icon="compress" href="/ingestion/rollup">
+    Understand rollup in detail
+  </Card>
+  <Card title="Partitioning" icon="chart-pie" href="/ingestion/partitioning">
+    Learn about partitioning strategies
+  </Card>
+  <Card title="Ingestion Spec" icon="file-code" href="/ingestion/ingestion-spec">
+    Complete ingestion specification reference
+  </Card>
+</CardGroup>

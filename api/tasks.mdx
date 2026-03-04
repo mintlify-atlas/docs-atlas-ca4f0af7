@@ -1,0 +1,369 @@
+---
+title: "Tasks API"
+description: "HTTP API for managing ingestion tasks in Apache Druid"
+---
+
+The Tasks API allows you to retrieve, submit, and manage ingestion tasks in Apache Druid. Tasks are individual jobs that perform operations like data ingestion, querying, and compaction.
+
+## Task information and retrieval
+
+### Get an array of tasks
+
+Retrieves all tasks in the Druid cluster with information on ID, status, datasource, and metadata.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/tasks/?state=complete&datasource=wikipedia_api&createdTimeInterval=2015-09-12_2015-09-13&max=10&type=query_worker"
+```
+
+```http HTTP
+GET /druid/indexer/v1/tasks/?state=complete&datasource=wikipedia_api&createdTimeInterval=2015-09-12_2015-09-13&max=10&type=query_worker HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField query="state" type="string">
+  Filter by task state: `running`, `complete`, `waiting`, or `pending`.
+</ParamField>
+
+<ParamField query="datasource" type="string">
+  Filter tasks by datasource name.
+</ParamField>
+
+<ParamField query="createdTimeInterval" type="string">
+  ISO-8601 interval for task creation time. Use `_` as delimiter (e.g., `2023-06-27_2023-06-28`).
+</ParamField>
+
+<ParamField query="max" type="integer">
+  Maximum number of complete tasks to return. Only applies when `state=complete`.
+</ParamField>
+
+<ParamField query="type" type="string">
+  Filter by task type (e.g., `index_parallel`, `query_worker`).
+</ParamField>
+
+<ResponseExample>
+```json Task Array Response
+[
+    {
+        "id": "query-223549f8-b993-4483-b028-1b0d54713cad-worker0_0",
+        "groupId": "query-223549f8-b993-4483-b028-1b0d54713cad",
+        "type": "query_worker",
+        "createdTime": "2023-06-22T22:11:37.012Z",
+        "statusCode": "SUCCESS",
+        "duration": 17897,
+        "location": {
+            "host": "localhost",
+            "port": 8101,
+            "tlsPort": -1
+        },
+        "dataSource": "wikipedia_api",
+        "errorMsg": null
+    }
+]
+```
+</ResponseExample>
+
+### Get task payload
+
+Retrieves the complete task configuration and specifications for a given task ID.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/task/index_parallel_wikipedia_short_iajoonnd_2023-07-07T17:53:12.174Z"
+```
+
+```http HTTP
+GET /druid/indexer/v1/task/index_parallel_wikipedia_short_iajoonnd_2023-07-07T17:53:12.174Z HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="taskId" type="string" required>
+  The unique identifier of the task.
+</ParamField>
+
+<ResponseField name="task" type="string">
+  The task ID.
+</ResponseField>
+
+<ResponseField name="payload" type="object">
+  Complete task configuration including type, spec, dataSchema, ioConfig, and tuningConfig.
+</ResponseField>
+
+### Get task status
+
+Retrieves the current status of a task including state, duration, and error information.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/task/query-223549f8-b993-4483-b028-1b0d54713cad/status"
+```
+
+```http HTTP
+GET /druid/indexer/v1/task/query-223549f8-b993-4483-b028-1b0d54713cad/status HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="taskId" type="string" required>
+  The task ID to check status for.
+</ParamField>
+
+<ResponseField name="statusCode" type="string">
+  Current task status: SUCCESS, RUNNING, FAILED, or PENDING.
+</ResponseField>
+
+<ResponseField name="duration" type="integer">
+  Task duration in milliseconds (-1 if still running).
+</ResponseField>
+
+<ResponseField name="location" type="object">
+  Host, port, and TLS port where the task is running.
+</ResponseField>
+
+### Get task log
+
+Retrieves the event log for a task, showing execution details, errors, and warnings.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/task/index_kafka_social_media_0e905aa31037879_nommnaeg/log"
+```
+
+```http HTTP
+GET /druid/indexer/v1/task/index_kafka_social_media_0e905aa31037879_nommnaeg/log HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="taskId" type="string" required>
+  The task ID to retrieve logs for.
+</ParamField>
+
+<ParamField query="offset" type="integer">
+  Exclude the first N entries from the response.
+</ParamField>
+
+### Get task completion report
+
+Retrieves the task completion report with ingestion statistics and parse exceptions.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/task/query-52a8aafe-7265-4427-89fe-dc51275cc470/reports"
+```
+
+```http HTTP
+GET /druid/indexer/v1/task/query-52a8aafe-7265-4427-89fe-dc51275cc470/reports HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ResponseField name="ingestionStatsAndErrors" type="object">
+  Contains ingestion state, row statistics, and error information.
+</ResponseField>
+
+<ResponseField name="ingestionStatsAndErrors.payload.rowStats" type="object">
+  Statistics on processed, unparseable, and thrown away rows.
+</ResponseField>
+
+<ResponseExample>
+```json Task Report Response
+{
+    "ingestionStatsAndErrors": {
+        "taskId": "query-52a8aafe-7265-4427-89fe-dc51275cc470",
+        "payload": {
+            "ingestionState": "COMPLETED",
+            "rowStats": {
+                "buildSegments": {
+                    "processed": 39244,
+                    "processedBytes": 17106256,
+                    "processedWithError": 0,
+                    "thrownAway": 0,
+                    "unparseable": 0
+                }
+            }
+        }
+    }
+}
+```
+</ResponseExample>
+
+## Task operations
+
+### Submit a task
+
+Submits a JSON-based ingestion spec to the Overlord. Returns the task ID.
+
+<Note>
+For most batch ingestion, use the SQL-based ingestion API instead.
+</Note>
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/task" \
+--header 'Content-Type: application/json' \
+--data '{
+  "type" : "index_parallel",
+  "spec" : {
+    "dataSchema" : {
+      "dataSource" : "wikipedia_auto",
+      "timestampSpec": {
+        "column": "time",
+        "format": "iso"
+      },
+      "dimensionsSpec" : {
+        "useSchemaDiscovery": true
+      },
+      "granularitySpec" : {
+        "type" : "uniform",
+        "segmentGranularity" : "day",
+        "intervals" : ["2015-09-12/2015-09-13"]
+      }
+    },
+    "ioConfig" : {
+      "type" : "index_parallel",
+      "inputSource" : {
+        "type" : "local",
+        "baseDir" : "quickstart/tutorial/",
+        "filter" : "wikiticker-2015-09-12-sampled.json.gz"
+      },
+      "inputFormat" : {
+        "type" : "json"
+      }
+    }
+  }
+}'
+```
+</CodeGroup>
+
+<ParamField body="type" type="string" required>
+  Task type (e.g., `index_parallel`, `index_hadoop`).
+</ParamField>
+
+<ParamField body="spec" type="object" required>
+  Task specification containing dataSchema, ioConfig, and tuningConfig.
+</ParamField>
+
+<ResponseExample>
+```json Submit Task Response
+{
+    "task": "index_parallel_wikipedia_odofhkle_2023-06-23T21:07:28.226Z"
+}
+```
+</ResponseExample>
+
+### Shut down a task
+
+Shuts down a running task by ID.
+
+<CodeGroup>
+```bash cURL
+curl --request POST \
+  "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/task/query-52as8aafe-7265-4427-89fe-dc51275cc470/shutdown"
+```
+
+```http HTTP
+POST /druid/indexer/v1/task/query-52as8aafe-7265-4427-89fe-dc51275cc470/shutdown HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="taskId" type="string" required>
+  The ID of the task to shut down.
+</ParamField>
+
+<ResponseExample>
+```json Shutdown Response
+{
+    "task": "query-577a83dd-a14e-4380-bd01-c942b781236b"
+}
+```
+</ResponseExample>
+
+### Shut down all tasks for a datasource
+
+Shuts down all tasks associated with a specific datasource.
+
+<CodeGroup>
+```bash cURL
+curl --request POST \
+  "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/datasources/wikipedia_auto/shutdownAllTasks"
+```
+
+```http HTTP
+POST /druid/indexer/v1/datasources/wikipedia_auto/shutdownAllTasks HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="datasource" type="string" required>
+  The datasource whose tasks should be shut down.
+</ParamField>
+
+<ResponseExample>
+```json Response
+{
+    "dataSource": "wikipedia_api"
+}
+```
+</ResponseExample>
+
+## Task management
+
+### Retrieve status objects for tasks
+
+Retrieves status objects for a list of task IDs provided in the request body.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/taskStatus" \
+--header 'Content-Type: application/json' \
+--data '["index_parallel_wikipedia_auto_jndhkpbo_2023-06-26T17:23:05.308Z","index_parallel_wikipedia_auto_jbgiianh_2023-06-26T23:17:56.769Z"]'
+```
+</CodeGroup>
+
+<ParamField body="taskIds" type="array" required>
+  Array of task ID strings to retrieve status for.
+</ParamField>
+
+<ResponseExample>
+```json Multiple Task Status Response
+{
+    "index_parallel_wikipedia_auto_jbgiianh_2023-06-26T23:17:56.769Z": {
+        "id": "index_parallel_wikipedia_auto_jbgiianh_2023-06-26T23:17:56.769Z",
+        "status": "SUCCESS",
+        "duration": 10630
+    }
+}
+```
+</ResponseExample>
+
+### Clean up pending segments
+
+Manually cleans up the pending segments table in metadata storage for a datasource.
+
+<CodeGroup>
+```bash cURL
+curl --request DELETE \
+  "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/pendingSegments/wikipedia_api"
+```
+
+```http HTTP
+DELETE /druid/indexer/v1/pendingSegments/wikipedia_api HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="datasource" type="string" required>
+  The datasource to clean up pending segments for.
+</ParamField>
+
+<ResponseExample>
+```json Cleanup Response
+{
+    "numDeleted": 2
+}
+```
+</ResponseExample>

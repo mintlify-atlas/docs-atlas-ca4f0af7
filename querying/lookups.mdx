@@ -1,0 +1,328 @@
+---
+title: Lookups
+description: Configure and query key-value lookups in Apache Druid for dimension enrichment and query-time joins
+---
+
+Lookups in Apache Druid are key-value mappings that replace dimension values with new values, enabling join-like functionality. Think of lookups as dimension tables in a data warehouse.
+
+**Key concepts:**
+- **Key:** Dimension value to match (e.g., `appid-12345`)
+- **Value:** Replacement value (e.g., `Super Mega Awesome App`)
+
+## Lookup Characteristics
+
+### One-to-Many Mappings
+
+Lookups support both:
+- **One-to-one:** Country code → Country name
+- **Many-to-one:** Multiple app IDs → Single account manager
+
+When lookups are one-to-one ([injective](#injective-lookups)), Druid can apply additional query optimizations.
+
+### No Historical Data
+
+Lookups always use current data regardless of query time range:
+
+```sql
+SELECT LOOKUP(app_id, 'app_to_manager') AS manager
+FROM events
+WHERE __time BETWEEN '2023-01-01' AND '2023-12-31'
+```
+
+This returns the **current** account manager for each app_id, not the historical manager during 2023.
+
+<Warning>
+For time-sensitive mappings, include the mapping data in your raw denormalized data during ingestion.
+</Warning>
+
+### Storage
+
+Lookups are:
+- Preloaded in memory on all servers
+- Very small lookups (dozens to hundreds of entries) can be passed inline in queries using "map" lookup type
+
+## Query Syntax
+
+### LOOKUP Function (Recommended)
+
+```sql
+SELECT
+  LOOKUP(store, 'store_to_country') AS country,
+  SUM(revenue) AS total_revenue
+FROM sales
+GROUP BY LOOKUP(store, 'store_to_country')
+```
+
+**With default value:**
+
+```sql
+SELECT
+  LOOKUP(store, 'store_to_country', 'Unknown') AS country,
+  SUM(revenue)
+FROM sales
+GROUP BY 1
+```
+
+The third argument acts like `COALESCE` - returns 'Unknown' if lookup has no value for the key.
+
+### JOIN Syntax
+
+```sql
+SELECT
+  store_to_country.v AS country,
+  SUM(sales.revenue) AS country_revenue
+FROM sales
+INNER JOIN lookup.store_to_country ON sales.store = store_to_country.k
+GROUP BY store_to_country.v
+```
+
+Lookup datasources have exactly two columns:
+- `k` - The key (always STRING)
+- `v` - The value (always STRING)
+
+<Tip>
+The LOOKUP function has automatic [query rewrites](#query-rewrites) that JOIN doesn't support. Use LOOKUP function for better performance.
+</Tip>
+
+### Native Queries
+
+Use [dimension specs or extraction functions](dimensionspecs):
+
+```json
+{
+  "type": "extraction",
+  "dimension": "store",
+  "outputName": "country",
+  "extractionFn": {
+    "type": "registeredLookup",
+    "lookup": "store_to_country",
+    "replaceMissingValueWith": "Unknown"
+  }
+}
+```
+
+## Query Rewrites
+
+Druid automatically optimizes queries using the LOOKUP function:
+
+### Reverse Lookup
+
+Druid reverses lookups in WHERE clauses to filter on the original dimension:
+
+**Original query:**
+
+```sql
+SELECT
+  LOOKUP(sku, 'sku_to_name') AS name,
+  SUM(revenue)
+FROM sales
+WHERE LOOKUP(sku, 'sku_to_name') = 'WhizBang Sprocket'
+GROUP BY LOOKUP(sku, 'sku_to_name')
+```
+
+**Optimized (automatic):**
+
+```sql
+SELECT
+  LOOKUP(sku, 'sku_to_name') AS name,
+  SUM(revenue)
+FROM sales
+WHERE sku = 'WB00013'  -- Druid looks up the key for 'WhizBang Sprocket'
+GROUP BY LOOKUP(sku, 'sku_to_name')
+```
+
+This is faster because servers can use indexes on `sku` instead of applying the lookup to every row.
+
+#### Reversible Patterns
+
+Examples of filters that can be reversed:
+
+| SQL | Reversible? | Notes |
+|-----|-------------|-------|
+| `LOOKUP(...) = 'value'` | Yes | |
+| `LOOKUP(...) IS NOT DISTINCT FROM 'value'` | Yes | Non-null literals only |
+| `LOOKUP(...) <> 'value'` | Only if injective | |
+| `LOOKUP(...) IN ('a', 'b')` | Yes | |
+| `LOOKUP(...) NOT IN ('a', 'b')` | Only if injective | |
+| `LOOKUP(UPPER(col), ...) = 'value'` | Yes | UPPER remains |
+| `COALESCE(LOOKUP(...), 'N/A') = 'value'` | Yes | But not for `= 'N/A'` unless injective |
+| `LOWER(LOOKUP(...)) = 'value'` | No | Can't reverse non-COALESCE functions |
+| `MV_CONTAINS(LOOKUP(...), 'value')` | Yes | |
+| `NOT MV_CONTAINS(LOOKUP(...), 'value')` | Only if injective | |
+
+**Configuration:**
+
+Set [`sqlReverseLookup: false`](sql-query-context) in query context to disable.
+
+Threshold limits:
+- [`sqlReverseLookupThreshold`](sql-query-context) - Max matching keys
+- [`inSubQueryThreshold`](sql-query-context) - For IN filter expansion
+
+### Pull Up Through GROUP BY
+
+[Injective](#injective-lookups) lookups can be pulled up past GROUP BY:
+
+**Original query:**
+
+```sql
+SELECT
+  LOOKUP(sku, 'sku_to_name') AS name,
+  SUM(revenue)
+FROM sales
+GROUP BY LOOKUP(sku, 'sku_to_name')
+```
+
+**Optimized (automatic, if sku_to_name is injective):**
+
+```sql
+SELECT
+  LOOKUP(sku, 'sku_to_name') AS name,
+  SUM(revenue)
+FROM sales
+GROUP BY sku  -- Group by original column
+-- LOOKUP applied after grouping
+```
+
+This is faster because grouping happens on the original column, then lookup is applied once per group instead of once per row.
+
+Set [`sqlPullUpLookup: false`](sql-query-context) in query context to disable.
+
+## Injective Lookups
+
+Injective lookups are "one-to-one" mappings that satisfy:
+
+1. **All values are unique** - No two keys map to the same value
+2. **Complete coverage** - Every input the LOOKUP function encounters has a key
+3. **NULL handling** - Don't need key for NULL (LOOKUP of NULL is always NULL)
+
+Set `injective: true` in the [lookup definition](lookups-cached-global) to enable all optimizations.
+
+<Warning>
+Druid does NOT verify injectivity. Setting `injective: true` for non-injective lookups can produce incorrect results.
+</Warning>
+
+**Example injective lookup:**
+
+```json
+{
+  "version": "1",
+  "lookupExtractorFactory": {
+    "type": "map",
+    "map": {
+      "US": "United States",
+      "CA": "Canada",
+      "MX": "Mexico"
+    },
+    "injective": true
+  }
+}
+```
+
+## Configuration
+
+### Lookup Tiers
+
+Lookups are organized into "tiers" - groups of services that receive a set of lookups:
+
+- Historicals typically use `__default` tier
+- Peons can use datasource-specific tiers
+- Lookup tiers are independent of Historical tiers
+
+### Server Configuration
+
+**Broker / Router / Historical / Peon:**
+
+| Property | Description | Default |
+|----------|-------------|----------|
+| `druid.lookup.lookupTier` | Tier for this process | `__default` |
+| `druid.lookup.lookupTierIsDatasource` | Use datasource name as tier (for Peons) | `false` |
+
+**Coordinator:**
+
+| Property | Description | Default |
+|----------|-------------|----------|
+| `druid.manager.lookups.hostTimeout` | Timeout per host (ms) | 2000 |
+| `druid.manager.lookups.allHostTimeout` | Total timeout (ms) | 900000 (15 min) |
+| `druid.manager.lookups.period` | Pause between management cycles (ms) | 120000 (2 min) |
+| `druid.manager.lookups.threadPoolSize` | Concurrent managed processes | 10 |
+
+### Snapshot Configuration
+
+Save lookup configuration across restarts:
+
+| Property | Description | Default |
+|----------|-------------|----------|
+| `druid.lookup.snapshotWorkingDir` | Directory for lookup snapshots | null (disabled) |
+| `druid.lookup.enableLookupSyncOnStartup` | Fetch from Coordinator on startup | true |
+| `druid.lookup.numLookupLoadingThreads` | Parallel loading threads | Available Processors / 2 |
+| `druid.lookup.coordinatorFetchRetries` | Retries to fetch lookup list | 3 |
+| `druid.lookup.lookupStartRetries` | Retries to start each lookup | 3 |
+| `druid.lookup.coordinatorRetryDelay` | Delay between retries (ms) | 60000 |
+
+## Lookup API
+
+**Configure lookups:**
+
+```
+POST http://<COORDINATOR>:<PORT>/druid/coordinator/v1/lookups/config/{tier}/{id}
+```
+
+**Initialize (first time only):**
+
+```bash
+curl -X POST http://coordinator:8081/druid/coordinator/v1/lookups/config \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+```
+
+See [Lookups API](../api-reference/lookups-api) reference for all endpoints.
+
+## Introspection
+
+Brokers provide lookup introspection endpoints:
+
+**Get all key-value pairs:**
+
+```bash
+curl http://broker:8082/druid/v1/lookups/introspect/nato-phonetic
+```
+
+```json
+{
+  "A": "Alfa",
+  "B": "Bravo",
+  "C": "Charlie",
+  "Z": "Zulu"
+}
+```
+
+**Get keys only:**
+
+```bash
+curl http://broker:8082/druid/v1/lookups/introspect/nato-phonetic/keys
+```
+
+```json
+["A", "B", "C", "Z"]
+```
+
+**Get values only:**
+
+```bash
+curl http://broker:8082/druid/v1/lookups/introspect/nato-phonetic/values
+```
+
+```json
+["Alfa", "Bravo", "Charlie", "Zulu"]
+```
+
+## Lookup Extensions
+
+- [Globally cached lookups](lookups-cached-global) - From local files, remote URIs, or JDBC
+- [Kafka extraction namespace](kafka-extraction-namespace) - From Kafka topics
+
+## Related Documentation
+
+- [Dimension Specs](dimensionspecs) - Using lookups in native queries
+- [SQL Scalar Functions](sql-scalar#string-functions) - LOOKUP function reference
+- [Joins](joins) - When to use joins vs lookups

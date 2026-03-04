@@ -1,0 +1,254 @@
+---
+title: "Logging"
+description: "Configure logging for Apache Druid services using log4j2, including log rotation, async logging, and log directories."
+---
+
+Apache Druid services emit logs to help you debug issues. The same services also emit periodic metrics about their state.
+
+<Tip>
+To disable metric info logs, set the following runtime property: `-Ddruid.emitter.logging.logLevel=debug`
+</Tip>
+
+## Log4j2 Configuration
+
+Druid uses [log4j2](http://logging.apache.org/log4j/2.x/) for logging. The default configuration file is located at:
+
+```
+conf/druid/{config}/_common/log4j2.xml
+```
+
+By default, Druid uses `RollingRandomAccessFile` for daily rollover and keeps log files for up to 7 days. If this doesn't suit your needs, modify the `log4j2.xml` file accordingly.
+
+## Default Log4j2 Configuration
+
+Here's an example `log4j2.xml` based on the micro quickstart:
+
+```xml
+<?xml version="1.0" encoding="UTF-8" ?>
+<Configuration status="WARN">
+  <Properties>
+    <!-- To change log directory, set DRUID_LOG_DIR environment variable -->
+    <Property name="druid.log.path" value="log" />
+  </Properties>
+
+  <Appenders>
+    <Console name="Console" target="SYSTEM_OUT">
+      <PatternLayout pattern="%d{ISO8601} %p [%t] %c -%notEmpty{ [%markerSimpleName]} %m%n"/>
+    </Console>
+
+    <!-- Rolling Files -->
+    <RollingRandomAccessFile name="FileAppender"
+                             fileName="${sys:druid.log.path}/${sys:druid.node.type}.log"
+                             filePattern="${sys:druid.log.path}/${sys:druid.node.type}.%d{yyyyMMdd}.log">
+      <PatternLayout pattern="%d{ISO8601} %p [%t] %c -%notEmpty{ [%markerSimpleName]} %m%n"/>
+      <Policies>
+        <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+      </Policies>
+      <DefaultRolloverStrategy>
+        <Delete basePath="${sys:druid.log.path}/" maxDepth="1">
+          <IfFileName glob="*.log" />
+          <IfLastModified age="7d" />
+        </Delete>
+      </DefaultRolloverStrategy>
+    </RollingRandomAccessFile>
+  </Appenders>
+
+  <Loggers>
+    <Root level="info">
+      <AppenderRef ref="FileAppender"/>
+    </Root>
+
+    <!-- Set level="debug" to see stack traces for query errors -->
+    <Logger name="org.apache.druid.server.QueryResource" level="info" additivity="false">
+      <AppenderRef ref="FileAppender"/>
+    </Logger>
+    <Logger name="org.apache.druid.server.QueryLifecycle" level="info" additivity="false">
+      <AppenderRef ref="FileAppender"/>
+    </Logger>
+
+    <!-- Set level="debug" or "trace" to see Coordinator details -->
+    <Logger name="org.apache.druid.server.coordinator" level="info" additivity="false">
+      <AppenderRef ref="FileAppender"/>
+    </Logger>
+
+    <!-- Set level="debug" to see segment and ingestion details -->
+    <Logger name="org.apache.druid.segment" level="info" additivity="false">
+      <AppenderRef ref="FileAppender"/>
+    </Logger>
+
+    <!-- Set level="debug" to see extension initialization info -->
+    <Logger name="org.apache.druid.initialization" level="info" additivity="false">
+      <AppenderRef ref="FileAppender"/>
+    </Logger>
+
+    <!-- Quieter logging at startup -->
+    <Logger name="com.sun.jersey.guice" level="warn" additivity="false">
+      <AppenderRef ref="FileAppender"/>
+    </Logger>
+  </Loggers>
+</Configuration>
+```
+
+## Task Logging
+
+Peons (task processes) always output logs to standard output. Middle Managers redirect task logs from standard output to long-term storage.
+
+<Note>
+Druid shares the log4j configuration file among all services, including task peon processes. You must define a console appender in the logger for peon processes. If you don't, Druid creates a new console appender that retains the log level but not other appender configurations.
+</Note>
+
+## Log Directory Configuration
+
+The default log4j2.xml writes logs to the `log` directory at the distribution root.
+
+To change the log directory, set the `DRUID_LOG_DIR` environment variable before starting Druid:
+
+```bash
+export DRUID_LOG_DIR=/var/log/druid
+```
+
+## All-in-One Start Commands
+
+When using all-in-one start commands like `bin/start-micro-quickstart`, each service generates two types of log files:
+
+1. **Main log file** (rotated periodically by log4j2):
+   ```
+   log/historical.log
+   ```
+
+2. **Standard output/error log** (not rotated, generally small):
+   ```
+   log/historical.stdout.log
+   ```
+
+The secondary log file contains messages written directly to standard output or standard error, primarily from the Java runtime itself.
+
+<Tip>
+You can manually truncate the stdout log file if needed:
+```bash
+truncate --size 0 log/historical.stdout.log
+```
+</Tip>
+
+## Asynchronous Logging
+
+For high-volume logging scenarios, you can configure async logging for chatty classes:
+
+```xml
+<?xml version="1.0" encoding="UTF-8" ?>
+<Configuration status="WARN">
+  <Appenders>
+    <Console name="Console" target="SYSTEM_OUT">
+      <PatternLayout pattern="%d{ISO8601} %p [%t] %c -%notEmpty{ [%markerSimpleName]} %m%n"/>
+    </Console>
+  </Appenders>
+  
+  <Loggers>
+    <!-- AsyncLogger instead of Logger -->
+    <AsyncLogger name="org.apache.druid.curator.inventory.CuratorInventoryManager" 
+                 level="debug" additivity="false">
+      <AppenderRef ref="Console"/>
+    </AsyncLogger>
+    
+    <AsyncLogger name="org.apache.druid.client.BatchServerInventoryView" 
+                 level="debug" additivity="false">
+      <AppenderRef ref="Console"/>
+    </AsyncLogger>
+    
+    <AsyncLogger name="org.apache.druid.client.ServerInventoryView" 
+                 level="debug" additivity="false">
+      <AppenderRef ref="Console"/>
+    </AsyncLogger>
+    
+    <AsyncLogger name="org.apache.druid.java.util.http.client.pool.ChannelResourceFactory" 
+                 level="info" additivity="false">
+      <AppenderRef ref="Console"/>
+    </AsyncLogger>
+    
+    <Root level="info">
+      <AppenderRef ref="Console"/>
+    </Root>
+  </Loggers>
+</Configuration>
+```
+
+<Warning>
+Async logging can improve performance but may result in log loss if the JVM crashes before logs are flushed to disk.
+</Warning>
+
+## Common Logging Configurations
+
+### Debugging Query Errors
+
+To see stack traces for query errors, set the log level to `debug`:
+
+```xml
+<Logger name="org.apache.druid.server.QueryResource" level="debug" additivity="false">
+  <AppenderRef ref="FileAppender"/>
+</Logger>
+<Logger name="org.apache.druid.server.QueryLifecycle" level="debug" additivity="false">
+  <AppenderRef ref="FileAppender"/>
+</Logger>
+```
+
+### Coordinator Debugging
+
+To see detailed Coordinator information (segment balancing, load/drop rules):
+
+```xml
+<Logger name="org.apache.druid.server.coordinator" level="debug" additivity="false">
+  <AppenderRef ref="FileAppender"/>
+</Logger>
+```
+
+For even more detail, use `level="trace"`.
+
+### Segment and Ingestion Debugging
+
+To see low-level details about segments and ingestion:
+
+```xml
+<Logger name="org.apache.druid.segment" level="debug" additivity="false">
+  <AppenderRef ref="FileAppender"/>
+</Logger>
+```
+
+### Extension Initialization
+
+To see more information about extension loading:
+
+```xml
+<Logger name="org.apache.druid.initialization" level="debug" additivity="false">
+  <AppenderRef ref="FileAppender"/>
+</Logger>
+```
+
+## Task Log Storage
+
+You can configure long-term storage for task logs using the `druid.indexer.logs` configuration. For details, see the [Configuration Reference](/configuration/index#task-logging) section on task logging.
+
+Supported storage types:
+- `file` - Local filesystem
+- `s3` - Amazon S3 (requires druid-s3-extensions)
+- `azure` - Azure Blob Store (requires druid-azure-extensions)
+- `google` - Google Cloud Storage (requires druid-google-extensions)
+- `hdfs` - HDFS (requires druid-hdfs-storage)
+
+### Example: S3 Task Logs
+
+```properties
+druid.indexer.logs.type=s3
+druid.indexer.logs.s3Bucket=my-druid-logs
+druid.indexer.logs.s3Prefix=task-logs/
+```
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Configuration Reference" icon="sliders" href="/configuration/index">
+    Complete configuration reference including request logging
+  </Card>
+  <Card title="Metrics" icon="chart-line" href="https://druid.apache.org/docs/latest/operations/metrics.html">
+    Learn about Druid metrics and monitoring
+  </Card>
+</CardGroup>

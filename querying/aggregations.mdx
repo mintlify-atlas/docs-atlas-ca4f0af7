@@ -1,0 +1,416 @@
+---
+title: Aggregations
+description: Reference for Apache Druid native aggregation functions including count, sum, min, max, first, last, and approximate aggregations
+---
+
+Aggregations in Apache Druid can be used during ingestion to summarize data before it enters Druid, and at query time to summarize result data.
+
+<Note>
+This document describes native query aggregations. For SQL aggregations, see [SQL aggregation functions](sql-aggregations).
+</Note>
+
+## Exact Aggregations
+
+### Count Aggregator
+
+Computes the count of Druid rows matching the filters:
+
+```json
+{"type": "count", "name": "count"}
+```
+
+| Property | Description | Required |
+|----------|-------------|----------|
+| `type` | Must be "count" | Yes |
+| `name` | Output name | Yes |
+
+<Warning>
+The count aggregator counts Druid rows, not raw ingested events. With rollup enabled, these may differ. To count raw events, include a count aggregator at ingestion time and a longSum aggregator at query time.
+</Warning>
+
+### Sum Aggregators
+
+#### longSum
+
+Computes the sum of values as a 64-bit signed integer:
+
+```json
+{"type": "longSum", "name": "sumLong", "fieldName": "aLong"}
+```
+
+#### doubleSum
+
+Computes the sum as a 64-bit floating point value:
+
+```json
+{"type": "doubleSum", "name": "sumDouble", "fieldName": "aDouble"}
+```
+
+#### floatSum
+
+Computes the sum as a 32-bit floating point value:
+
+```json
+{"type": "floatSum", "name": "sumFloat", "fieldName": "aFloat"}
+```
+
+**Common properties:**
+
+| Property | Description | Required |
+|----------|-------------|----------|
+| `type` | "longSum", "doubleSum", or "floatSum" | Yes |
+| `name` | Output name | Yes |
+| `fieldName` | Input column name | No* |
+| `expression` | Inline [expression](math-expr) | No* |
+
+*Must specify either `fieldName` or `expression`
+
+### Min and Max Aggregators
+
+#### doubleMin / doubleMax
+
+```json
+{"type": "doubleMin", "name": "minDouble", "fieldName": "aDouble"}
+{"type": "doubleMax", "name": "maxDouble", "fieldName": "aDouble"}
+```
+
+#### floatMin / floatMax
+
+```json
+{"type": "floatMin", "name": "minFloat", "fieldName": "aFloat"}
+{"type": "floatMax", "name": "maxFloat", "fieldName": "aFloat"}
+```
+
+#### longMin / longMax
+
+```json
+{"type": "longMin", "name": "minLong", "fieldName": "aLong"}
+{"type": "longMax", "name": "maxLong", "fieldName": "aLong"}
+```
+
+**Common properties:**
+
+| Property | Description | Required |
+|----------|-------------|----------|
+| `type` | Min/max type (e.g., "doubleMin") | Yes |
+| `name` | Output name | Yes |
+| `fieldName` | Input column name | No* |
+| `expression` | Inline [expression](math-expr) | No* |
+
+*Must specify either `fieldName` or `expression`
+
+### doubleMean Aggregator
+
+Computes the arithmetic mean as a 64-bit float:
+
+```json
+{"type": "doubleMean", "name": "aMean", "fieldName": "aDouble"}
+```
+
+<Warning>
+Query time only - not available for ingestion. For ingestion-time mean, use [DataSketches Quantiles aggregator](../development/extensions-core/datasketches-quantiles#aggregator).
+</Warning>
+
+### First and Last Aggregators
+
+Return values corresponding to earliest/latest time column values.
+
+<Note>
+With rollup enabled at ingestion, these return rolled-up values, not original raw data values.
+</Note>
+
+#### Numeric First/Last
+
+**doubleFirst / doubleLast:**
+
+```json
+{
+  "type": "doubleFirst",
+  "name": "firstDouble",
+  "fieldName": "aDouble"
+}
+```
+
+**floatFirst / floatLast:**
+
+```json
+{
+  "type": "floatLast",
+  "name": "lastFloat",
+  "fieldName": "aFloat",
+  "timeColumn": "longTime"
+}
+```
+
+**longFirst / longLast:**
+
+```json
+{
+  "type": "longFirst",
+  "name": "firstLong",
+  "fieldName": "aLong"
+}
+```
+
+| Property | Description | Required |
+|----------|-------------|----------|
+| `type` | First/last type | Yes |
+| `name` | Output name | Yes |
+| `fieldName` | Input column | Yes |
+| `timeColumn` | Time column (LONG type) | No (defaults to `__time`) |
+
+#### String First/Last
+
+**stringFirst:**
+
+```json
+{
+  "type": "stringFirst",
+  "name": "firstString",
+  "fieldName": "aString",
+  "maxStringBytes": 2048,
+  "timeColumn": "longTime"
+}
+```
+
+**stringLast:**
+
+```json
+{
+  "type": "stringLast",
+  "name": "lastString",
+  "fieldName": "aString"
+}
+```
+
+| Property | Description | Required |
+|----------|-------------|----------|
+| `type` | "stringFirst" or "stringLast" | Yes |
+| `name` | Output name | Yes |
+| `fieldName` | Input column | Yes |
+| `timeColumn` | Time column (LONG type) | No (defaults to `__time`) |
+| `maxStringBytes` | Max string size to accumulate | No (defaults to 1024) |
+
+### ANY Aggregators
+
+Return any encountered value (including null). Query time only.
+
+#### Numeric ANY
+
+**doubleAny:**
+
+```json
+{"type": "doubleAny", "name": "anyDouble", "fieldName": "aDouble"}
+```
+
+**floatAny:**
+
+```json
+{"type": "floatAny", "name": "anyFloat", "fieldName": "aFloat"}
+```
+
+**longAny:**
+
+```json
+{"type": "longAny", "name": "anyLong", "fieldName": "aLong"}
+```
+
+#### stringAny
+
+```json
+{
+  "type": "stringAny",
+  "name": "anyString",
+  "fieldName": "aString",
+  "maxStringBytes": 2048,
+  "aggregateMultipleValues": true
+}
+```
+
+| Property | Description | Required |
+|----------|-------------|----------|
+| `type` | "stringAny" | Yes |
+| `name` | Output name | Yes |
+| `fieldName` | Input column | Yes |
+| `maxStringBytes` | Max string size | No (defaults to 1024) |
+| `aggregateMultipleValues` | If true, returns stringified array for multi-value dims | No (defaults to true) |
+
+## Approximate Aggregations
+
+### Count Distinct
+
+#### DataSketches Theta Sketch
+
+Provides distinct count estimates with set operations (union, intersection, difference):
+
+- [DataSketches Theta Sketch](../development/extensions-core/datasketches-theta)
+
+#### DataSketches HLL Sketch
+
+HyperLogLog-based distinct counting. More space-efficient than Theta but no set operations:
+
+- [DataSketches HLL Sketch](../development/extensions-core/datasketches-hll)
+
+#### Legacy: Cardinality and hyperUnique
+
+<Warning>
+For new use cases, use DataSketches Theta or HLL instead. Legacy aggregators kept for backwards compatibility.
+</Warning>
+
+- [Cardinality and HyperUnique](hll-old)
+
+### Histograms and Quantiles
+
+#### DataSketches Quantiles Sketch (Recommended)
+
+Provides quantile estimates and histogram approximations with formal error bounds:
+
+- [DataSketches Quantiles Sketch](../development/extensions-core/datasketches-quantiles)
+
+#### Moments Sketch (Experimental)
+
+Optimized for merge speed but accuracy is distribution-dependent:
+
+- [Moments Sketch](../development/extensions-contrib/momentsketch-quantiles)
+
+#### Fixed Buckets Histogram
+
+Simple histogram with fixed range and bucket count:
+
+- [Fixed Buckets Histogram](../development/extensions-core/approximate-histograms#fixed-buckets-histogram)
+
+#### Approximate Histogram (Deprecated)
+
+<Warning>
+Deprecated due to accuracy issues. Use DataSketches Quantiles instead.
+</Warning>
+
+## Expression Aggregations
+
+### Expression Aggregator
+
+Custom aggregations using Druid expressions (query time only):
+
+```json
+{
+  "type": "expression",
+  "name": "expression_sum",
+  "fields": ["column_a"],
+  "accumulatorIdentifier": "__acc",
+  "initialValue": "0",
+  "fold": "__acc + column_a",
+  "combine": "__acc + expression_sum"
+}
+```
+
+| Property | Description | Required |
+|----------|-------------|----------|
+| `type` | Must be "expression" | Yes |
+| `name` | Output name | Yes |
+| `fields` | Input columns | Yes |
+| `accumulatorIdentifier` | Variable for accumulator | No (defaults to `__acc`) |
+| `fold` | Expression to accumulate values | Yes |
+| `combine` | Expression to merge fold results | No (defaults to fold) |
+| `compare` | Comparator expression (inputs: `o1`, `o2`) | No |
+| `finalize` | Final transformation (input: `o`) | No |
+| `initialValue` | Initial accumulator value | Yes |
+| `initialCombineValue` | Initial combine value | No (defaults to initialValue) |
+| `isNullUnlessAggregated` | Return null if no rows processed | No (defaults to true) |
+| `shouldAggregateNullInputs` | Process null inputs in fold | No (defaults to true) |
+| `shouldCombineAggregateNullInputs` | Process null inputs in combine | No (defaults to shouldAggregateNullInputs) |
+| `maxSizeBytes` | Max size for variable-sized outputs | No (defaults to 8192) |
+
+#### Example: Count Aggregator
+
+```json
+{
+  "type": "expression",
+  "name": "expression_count",
+  "fields": [],
+  "initialValue": "0",
+  "fold": "__acc + 1",
+  "combine": "__acc + expression_count"
+}
+```
+
+#### Example: Distinct Array with Ordering
+
+```json
+{
+  "type": "expression",
+  "name": "expression_array_agg_distinct",
+  "fields": ["column_a"],
+  "initialValue": "[]",
+  "fold": "array_set_add(__acc, column_a)",
+  "combine": "array_set_add_all(__acc, expression_array_agg_distinct)",
+  "compare": "if(array_length(o1) > array_length(o2), 1, if(array_length(o1) == array_length(o2), 0, -1))"
+}
+```
+
+### JavaScript Aggregator
+
+Custom JavaScript functions for aggregation:
+
+```json
+{
+  "type": "javascript",
+  "name": "sum(log(x)*y) + 10",
+  "fieldNames": ["x", "y"],
+  "fnAggregate": "function(current, a, b) { return current + (Math.log(a) * b); }",
+  "fnCombine": "function(partialA, partialB) { return partialA + partialB; }",
+  "fnReset": "function() { return 10; }"
+}
+```
+
+<Warning>
+JavaScript is disabled by default. See [JavaScript programming guide](../development/javascript) for how to enable.
+</Warning>
+
+## Miscellaneous Aggregations
+
+### Filtered Aggregator
+
+Wraps any aggregator to only aggregate matching rows:
+
+```json
+{
+  "type": "filtered",
+  "filter": {
+    "type": "selector",
+    "dimension": "someColumn",
+    "value": "abcdef"
+  },
+  "aggregator": {
+    "type": "longSum",
+    "name": "sumLong",
+    "fieldName": "aLong"
+  }
+}
+```
+
+<Tip>
+If you only need filtered results, put the filter on the query itself for better performance.
+</Tip>
+
+### Grouping Aggregator
+
+For GroupBy queries with subtotals - returns a number indicating which dimensions are in the sub-grouping:
+
+```json
+{
+  "type": "grouping",
+  "name": "someGrouping",
+  "groupings": ["dim1", "dim2"]
+}
+```
+
+With subtotals `[["dim1", "dim2"], ["dim1"], ["dim2"], []]`:
+
+| Subtotal | Output | Binary |
+|----------|--------|--------|
+| `["dim1", "dim2"]` | 0 | (00) |
+| `["dim1"]` | 1 | (01) |
+| `["dim2"]` | 2 | (10) |
+| `[]` | 3 | (11) |
+
+Bit at position X is 0 if dimension at position X is included in sub-grouping, else 1.

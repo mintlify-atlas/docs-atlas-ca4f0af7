@@ -1,0 +1,134 @@
+---
+title: Data Management
+description: Overview of data management operations in Apache Druid including updates, deletions, schema changes, and compaction.
+---
+
+Apache Druid stores data partitioned by time chunk in immutable files called segments. This section covers the essential data management operations for working with segments in Druid.
+
+## Overview
+
+Druid's segment-based architecture requires specific approaches for managing data after ingestion. Since segments are immutable, operations like updates and deletions work by creating new segments that replace existing ones.
+
+## Core Data Management Operations
+
+### Segment Management
+
+Druid stores data in [segments](../design/segments) - immutable files partitioned by time chunk. Understanding segment lifecycle and optimization is key to maintaining query performance.
+
+<CardGroup cols={2}>
+  <Card title="Compaction" icon="compress" href="./compaction">
+    Optimize segment size and improve query performance by reindexing existing data
+  </Card>
+  <Card title="Updates" icon="rotate" href="./update">
+    Overwrite or reindex existing data with new values
+  </Card>
+  <Card title="Deletion" icon="trash" href="./delete">
+    Remove data by time range or specific records
+  </Card>
+  <Card title="Retention Rules" icon="clock" href="../operations/rule-configuration">
+    Automatically manage data lifecycle with load and drop rules
+  </Card>
+</CardGroup>
+
+## Data Lifecycle
+
+Data management in Druid involves several stages:
+
+<Steps>
+  <Step title="Ingestion">
+    Data is ingested and written into segments partitioned by time
+  </Step>
+  
+  <Step title="Optimization">
+    Segments are compacted to optimal sizes for query performance
+  </Step>
+  
+  <Step title="Retention">
+    Retention rules determine which segments remain available for queries
+  </Step>
+  
+  <Step title="Deletion">
+    Old or unused data is marked unused and optionally removed from deep storage
+  </Step>
+</Steps>
+
+## Key Concepts
+
+### Segment Lifecycle
+
+Segments transition through different states:
+- **Used**: Active segments available for querying
+- **Unused**: Segments marked for deletion but still in deep storage
+- **Deleted**: Permanently removed from deep storage
+
+### Atomic Updates
+
+Druid's atomic update mechanism ensures queries seamlessly transition from old data to new data on a time-chunk-by-time-chunk basis. This means:
+- No partial updates visible to queries
+- No downtime during data replacement
+- Time-based locking prevents conflicts
+
+<Warning>
+Druid does not support single-record updates by primary key. To update specific records, you must reindex the entire time interval containing those records.
+</Warning>
+
+## Common Operations
+
+### Updates and Overwrites
+
+To update existing data:
+- Use native batch ingestion with `appendToExisting: false`
+- Use SQL `REPLACE` statements for overwriting data
+- Reindex using the Druid input source to modify existing segments
+
+See [Data Updates](./update) for detailed examples.
+
+### Compaction Strategies
+
+Compaction improves performance by:
+- Combining many small segments into optimally-sized ones
+- Changing segment or query granularity
+- Reordering dimensions for better compression
+- Removing unused columns or applying rollup
+
+See [Compaction](./compaction) for use cases and configuration.
+
+### Retention Management
+
+Control data retention with:
+- **Load rules**: Define which segments to keep on Historical servers
+- **Drop rules**: Mark segments as unused based on time periods or intervals
+- **Broadcast rules**: Load segments onto Broker nodes (testing only)
+
+See [Rule Configuration](../operations/rule-configuration) for detailed rule types.
+
+## Best Practices
+
+<Note>
+**Automatic Compaction**: Enable auto-compaction for all datasources to maintain optimal segment sizes without manual intervention.
+</Note>
+
+<Note>
+**Retention Rules**: Set up retention rules early to automatically manage data lifecycle and prevent unlimited storage growth.
+</Note>
+
+<Note>
+**Kill Tasks**: After marking segments unused via drop rules, use kill tasks to permanently delete data from deep storage.
+</Note>
+
+## Learn More
+
+<CardGroup cols={2}>
+  <Card title="Segment Optimization" icon="gauge-high" href="../operations/segment-optimization">
+    Guidelines for optimal segment sizing
+  </Card>
+  <Card title="Schema Changes" icon="table" href="./schema-changes">
+    Modify datasource schemas for new and existing data
+  </Card>
+  <Card title="Storage Design" icon="database" href="../design/storage">
+    Deep dive into Druid's storage architecture
+  </Card>
+  <Card title="Manual Compaction" icon="gears" href="./manual-compaction">
+    Submit one-time compaction tasks for specific intervals
+  </Card>
+</CardGroup>

@@ -1,0 +1,351 @@
+---
+title: "Supervisor API"
+description: "HTTP API for managing streaming ingestion supervisors in Apache Druid"
+---
+
+The Supervisor API allows you to manage and monitor supervisors for Apache Druid. Supervisors manage the lifecycle of streaming ingestion tasks from sources like Kafka and Kinesis.
+
+<Note>
+In this documentation, the term "offset" refers to Kafka record identifiers. For Kinesis, the equivalent is "sequence number".
+</Note>
+
+## Supervisor information
+
+### Get active supervisor IDs
+
+Returns an array of active supervisor names.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/supervisor"
+```
+
+```http HTTP
+GET /druid/indexer/v1/supervisor HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ResponseExample>
+```json Supervisor IDs
+[
+    "wikipedia_stream",
+    "social_media"
+]
+```
+</ResponseExample>
+
+### Get active supervisor objects
+
+Retrieves detailed information for all active supervisors including state, spec, and configuration.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/supervisor?full=null"
+```
+
+```http HTTP
+GET /druid/indexer/v1/supervisor?full=null HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ResponseField name="id" type="string">
+  Unique supervisor identifier.
+</ResponseField>
+
+<ResponseField name="state" type="string">
+  Generic supervisor state: UNHEALTHY_SUPERVISOR, UNHEALTHY_TASKS, PENDING, RUNNING, SUSPENDED, or STOPPING.
+</ResponseField>
+
+<ResponseField name="detailedState" type="string">
+  Implementation-specific detailed state (e.g., CONNECTING_TO_STREAM for Kafka).
+</ResponseField>
+
+<ResponseField name="healthy" type="boolean">
+  Health indicator for the supervisor.
+</ResponseField>
+
+<ResponseField name="spec" type="object">
+  Complete supervisor configuration including dataSchema, ioConfig, and tuningConfig.
+</ResponseField>
+
+### Get supervisor states
+
+Retrieves state information for all active supervisors.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/supervisor?state=true"
+```
+
+```http HTTP
+GET /druid/indexer/v1/supervisor?state=true HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ResponseExample>
+```json Supervisor States
+[
+    {
+        "id": "wikipedia_stream",
+        "state": "UNHEALTHY_SUPERVISOR",
+        "detailedState": "UNABLE_TO_CONNECT_TO_STREAM",
+        "healthy": false,
+        "suspended": false
+    },
+    {
+        "id": "social_media",
+        "state": "RUNNING",
+        "detailedState": "RUNNING",
+        "healthy": true,
+        "suspended": false
+    }
+]
+```
+</ResponseExample>
+
+### Get supervisor specification
+
+Retrieves the complete specification for a single supervisor.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/supervisor/wikipedia_stream"
+```
+
+```http HTTP
+GET /druid/indexer/v1/supervisor/wikipedia_stream HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="supervisorId" type="string" required>
+  The unique identifier of the supervisor.
+</ParamField>
+
+<ResponseField name="type" type="string">
+  Supervisor type (kafka or kinesis).
+</ResponseField>
+
+<ResponseField name="dataSchema" type="object">
+  Data schema including timestamp spec, dimensions, and granularity.
+</ResponseField>
+
+<ResponseField name="ioConfig" type="object">
+  I/O configuration including topic, consumer properties, and task settings.
+</ResponseField>
+
+<ResponseField name="tuningConfig" type="object">
+  Tuning configuration for indexing performance.
+</ResponseField>
+
+### Get supervisor status
+
+Retrieves the current status report for a supervisor including task states and recent exceptions.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/supervisor/social_media/status"
+```
+
+```http HTTP
+GET /druid/indexer/v1/supervisor/social_media/status HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="supervisorId" type="string" required>
+  The supervisor ID to check status for.
+</ParamField>
+
+<ResponseField name="dataSource" type="string">
+  Name of the datasource being ingested.
+</ResponseField>
+
+<ResponseField name="stream" type="string">
+  Name of the Kafka topic or Kinesis stream.
+</ResponseField>
+
+<ResponseField name="partitions" type="integer">
+  Number of partitions in the stream.
+</ResponseField>
+
+<ResponseField name="activeTasks" type="array">
+  Array of currently running indexing tasks.
+</ResponseField>
+
+<ResponseField name="latestOffsets" type="object">
+  Latest available offsets for each partition.
+</ResponseField>
+
+<ResponseField name="minimumLag" type="object">
+  Minimum lag per partition between current offset and latest offset.
+</ResponseField>
+
+<ResponseExample>
+```json Supervisor Status
+{
+    "id": "social_media",
+    "generationTime": "2023-07-05T23:24:43.934Z",
+    "payload": {
+        "dataSource": "social_media",
+        "stream": "social_media",
+        "partitions": 1,
+        "activeTasks": [
+            {
+                "id": "index_kafka_social_media_ab72ae4127c591c_flcbhdlh",
+                "startingOffsets": {
+                    "0": 3176381
+                },
+                "currentOffsets": {
+                    "0": 3296632
+                },
+                "lag": {
+                    "0": 3
+                }
+            }
+        ],
+        "latestOffsets": {
+            "0": 3296635
+        },
+        "aggregateLag": 3,
+        "healthy": true,
+        "state": "RUNNING"
+    }
+}
+```
+</ResponseExample>
+
+### Get supervisor health
+
+Retrieves the health status of a supervisor based on state and configuration thresholds.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/supervisor/social_media/health"
+```
+
+```http HTTP
+GET /druid/indexer/v1/supervisor/social_media/health HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="supervisorId" type="string" required>
+  The supervisor ID to check health for.
+</ParamField>
+
+<ResponseExample>
+```json 200 - Healthy
+{
+    "healthy": true
+}
+```
+
+```json 503 - Unhealthy
+{
+    "healthy": false
+}
+```
+</ResponseExample>
+
+### Get supervisor ingestion stats
+
+Returns current ingestion row counters and moving averages for each task managed by the supervisor.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/supervisor/custom_data/stats"
+```
+
+```http HTTP
+GET /druid/indexer/v1/supervisor/custom_data/stats HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="supervisorId" type="string" required>
+  The supervisor ID to retrieve stats for.
+</ParamField>
+
+<ResponseField name="movingAverages" type="object">
+  Moving averages over 1m, 5m, and 15m windows.
+</ResponseField>
+
+<ResponseField name="totals" type="object">
+  Total counts since task start.
+</ResponseField>
+
+<ResponseExample>
+```json Ingestion Stats
+{
+    "0": {
+        "index_kafka_custom_data_881d621078f6b7c_ccplchbi": {
+            "movingAverages": {
+                "buildSegments": {
+                    "5m": {
+                        "processed": 53.40,
+                        "processedBytes": 5226.40,
+                        "unparseable": 0.0
+                    }
+                }
+            },
+            "totals": {
+                "buildSegments": {
+                    "processed": 665,
+                    "processedBytes": 65079,
+                    "unparseable": 0
+                }
+            }
+        }
+    }
+}
+```
+</ResponseExample>
+
+## Audit history
+
+### Get audit history for all supervisors
+
+Retrieves the audit history of supervisor configurations over a time period.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/supervisor/history"
+```
+
+```http HTTP
+GET /druid/indexer/v1/supervisor/history HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField query="interval" type="string">
+  ISO-8601 time interval to limit results (e.g., `2023-07-13/2023-07-19`).
+</ParamField>
+
+<ParamField query="count" type="integer">
+  Limit the number of results to the last N entries.
+</ParamField>
+
+<ResponseField name="key" type="string">
+  Supervisor ID.
+</ResponseField>
+
+<ResponseField name="type" type="string">
+  Type of change (typically "supervisor").
+</ResponseField>
+
+<ResponseField name="auditInfo" type="object">
+  Information about who made the change and when.
+</ResponseField>
+
+<ResponseField name="payload" type="string">
+  JSON string of the supervisor specification.
+</ResponseField>
+
+<ResponseField name="auditTime" type="string">
+  ISO-8601 timestamp of when the change was made.
+</ResponseField>

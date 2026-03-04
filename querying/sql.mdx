@@ -1,0 +1,277 @@
+---
+title: Druid SQL Overview
+description: Learn about Druid SQL syntax, query structure, and how to query Apache Druid using SQL
+---
+
+Apache Druid supports two query languages: Druid SQL and native queries. This page describes the SQL language and its syntax.
+
+<Note>
+Druid translates SQL queries into its native query language for execution. To learn about translation and optimize performance, see [SQL query translation](sql-translation).
+</Note>
+
+## Overview
+
+You can query data in Druid datasources using Druid SQL. SQL planning occurs on the Broker, so configure [Broker runtime properties](../configuration#sql) to adjust query planning and JDBC settings.
+
+For information on permissions needed to make SQL queries, see [Defining SQL permissions](../operations/security-user-auth#sql-permissions).
+
+## SQL Query Syntax
+
+Druid SQL supports SELECT queries with the following structure:
+
+```sql
+[ EXPLAIN PLAN FOR ]
+[ WITH tableName [ ( column1, column2, ... ) ] AS ( query ) ]
+SELECT [ ALL | DISTINCT ] { * | exprs }
+FROM { <table> | (<subquery>) | <o1> [ INNER | LEFT ] JOIN <o2> ON condition }
+[PIVOT (aggregation_function(column_to_aggregate) FOR column_with_values_to_pivot IN (pivoted_column1 [, pivoted_column2 ...]))]
+[UNPIVOT (values_column FOR names_column IN (unpivoted_column1 [, unpivoted_column2 ... ]))]
+[ CROSS JOIN UNNEST(source_expression) as table_alias_name(column_alias_name) ]
+[ WHERE expr ]
+[ GROUP BY [ exprs | GROUPING SETS ( (exprs), ... ) | ROLLUP (exprs) | CUBE (exprs) ] ]
+[ HAVING expr ]
+[ ORDER BY expr [ ASC | DESC ], expr [ ASC | DESC ], ... ]
+[ LIMIT limit ]
+[ OFFSET offset ]
+[ UNION ALL <another query> ]
+```
+
+## FROM Clause
+
+The FROM clause can refer to:
+
+- **Table datasources** from the `druid` schema (default). Reference as `druid.dataSourceName` or simply `dataSourceName`
+- **Lookups** from the `lookup` schema, for example `lookup.countries`
+- **Subqueries** enclosed in parentheses
+- **Joins** between datasources (except between native datasources and system tables)
+- **Metadata tables** from `INFORMATION_SCHEMA` or `sys` schemas
+
+For more information about datasources, refer to the [Datasources documentation](datasource).
+
+## Example Queries
+
+### Basic SELECT
+
+```sql
+SELECT 
+  channel,
+  user,
+  SUM(added) AS total_added
+FROM wikipedia
+WHERE channel LIKE '#en%'
+GROUP BY channel, user
+ORDER BY total_added DESC
+LIMIT 10
+```
+
+### PIVOT Example
+
+Transform row values into columns:
+
+```sql
+SELECT user, channel, ba_sum_deleted, ny_sum_deleted
+FROM wikipedia
+PIVOT (
+  SUM(deleted) AS "sum_deleted" 
+  FOR "cityName" IN ('Buenos Aires' AS ba, 'New York' AS ny)
+)
+WHERE ba_sum_deleted IS NOT NULL OR ny_sum_deleted IS NOT NULL
+LIMIT 15
+```
+
+### UNPIVOT Example
+
+Transform columns into rows:
+
+```sql
+SELECT channel, user, action, SUM(changes) AS total_changes
+FROM wikipedia 
+UNPIVOT (
+  changes FOR action IN ("added", "deleted")
+)
+WHERE channel LIKE '#ar%'
+GROUP BY channel, user, action
+LIMIT 15
+```
+
+## UNNEST
+
+The UNNEST clause unnests ARRAY typed values. Use `MV_TO_ARRAY` for multi-value dimensions:
+
+```sql
+SELECT column_alias_name
+FROM datasource
+CROSS JOIN UNNEST(source_expression1) AS table_alias_name1(column_alias_name1)
+```
+
+**Key points:**
+- Works directly on ARRAY columns
+- Use `MV_TO_ARRAY(dimension)` for multi-value VARCHAR columns
+- CROSS JOIN is required (except for inline arrays)
+- Preserves array ordering
+- Does not remove duplicates or nulls
+
+## WHERE Clause
+
+The WHERE clause filters rows and is translated to native filters. You can reference subqueries:
+
+```sql
+WHERE col1 IN (SELECT foo FROM ...)
+```
+
+**Type comparison tips:**
+- Strings and numbers can be compared through implicit conversion
+- For best performance, explicitly cast numbers to strings when comparing against string dimensions:
+
+```sql
+WHERE stringDim = '1'  -- Better than stringDim = 1
+WHERE stringDim IN ('1', '2', '3')  -- Cast array elements
+```
+
+## GROUP BY
+
+The GROUP BY clause aggregates data. You can:
+
+- Group by expressions or column ordinals: `GROUP BY 2`
+- Use GROUPING SETS for multiple grouping levels:
+
+```sql
+GROUP BY GROUPING SETS ((country, city), ())
+```
+
+- Use ROLLUP for hierarchical aggregation:
+
+```sql
+GROUP BY ROLLUP (country, city)
+-- Equivalent to: GROUPING SETS ((country, city), (country), ())
+```
+
+- Use CUBE for all combinations:
+
+```sql
+GROUP BY CUBE (country, city)
+-- Equivalent to: GROUPING SETS ((country, city), (country), (city), ())
+```
+
+## UNION ALL
+
+Combine results from multiple queries:
+
+### Top-level UNION ALL
+
+```sql
+SELECT COUNT(*) FROM tbl WHERE my_column = 'value1'
+UNION ALL
+SELECT COUNT(*) FROM tbl WHERE my_column = 'value2'
+```
+
+### Table-level UNION ALL
+
+```sql
+SELECT col1, COUNT(*)
+FROM (
+  SELECT col1, col2, col3 FROM tbl1
+  UNION ALL
+  SELECT col1, col2, col3 FROM tbl2
+)
+GROUP BY col1
+```
+
+Or use the TABLE(APPEND()) syntax:
+
+```sql
+SELECT col1, COUNT(*) FROM TABLE(APPEND('tbl1', 'tbl2'))
+GROUP BY col1
+```
+
+## EXPLAIN PLAN
+
+View how queries are translated to native queries:
+
+```sql
+EXPLAIN PLAN FOR
+SELECT COUNT(*) FROM datasource WHERE column = 'value'
+```
+
+## SET Statement
+
+Configure query context parameters:
+
+```sql
+SET useApproximateTopN = false;
+SET sqlTimeZone = 'America/Los_Angeles';
+SET timeout = 90000;
+SELECT some_column, COUNT(*) 
+FROM druid.foo 
+WHERE other_column = 'foo' 
+GROUP BY 1 
+ORDER BY 2 DESC
+```
+
+## Dynamic Parameters
+
+Use `?` placeholders for parameterized queries:
+
+```json
+{
+  "query": "SELECT * FROM druid.foo WHERE dim1 = ?",
+  "parameters": [
+    {"type": "VARCHAR", "value": "bar"}
+  ]
+}
+```
+
+### Array Parameters
+
+```json
+{
+  "query": "SELECT * FROM table WHERE ARRAY_CONTAINS(arrayColumn, ?)",
+  "parameters": [
+    {"type": "ARRAY", "value": [-25.7, null, 36.85]}
+  ]
+}
+```
+
+### Type Casting
+
+Explicitly cast parameters when needed:
+
+```sql
+SELECT * FROM druid.foo WHERE dim1 like CONCAT('%', CAST(? AS VARCHAR), '%')
+```
+
+## Identifiers and Literals
+
+**Identifiers:**
+- Optionally quote with double quotes: `"columnName"`
+- Escape quotes by doubling: `"My ""column"" name"`
+- Case-sensitive with no implicit conversions
+
+**Literals:**
+- Strings: `'foo'`
+- Unicode strings: `U&'fo\00F6'`
+- Numbers: `100`, `100.0`, `1.0e5`
+- Timestamps: `TIMESTAMP '2000-01-01 00:00:00'`
+- Intervals: `INTERVAL '1' HOUR`, `INTERVAL '1-2' YEAR TO MONTH`
+
+## Reserved Keywords
+
+Druid inherits reserved keywords from Apache Calcite, plus:
+- `CLUSTERED`
+- `PARTITIONED`
+
+Enclose reserved keywords in double quotes to use them:
+
+```sql
+SELECT "PARTITIONED" FROM druid.table
+```
+
+## Related Pages
+
+- [Data types](sql-data-types) - Supported data types
+- [Aggregation functions](sql-aggregations) - Available aggregations
+- [Scalar functions](sql-scalar) - String, numeric, and other functions
+- [Multi-value string functions](sql-multivalue-string-functions) - Operations on multi-value dimensions
+- [Query translation](sql-translation) - How SQL maps to native queries
+- [SQL API](../api-reference/sql-api) - HTTP API reference
+- [JDBC driver](../api-reference/sql-jdbc) - JDBC driver documentation

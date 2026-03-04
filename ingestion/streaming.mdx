@@ -1,0 +1,402 @@
+---
+title: Streaming Ingestion
+description: Learn about real-time data ingestion from Apache Kafka and Amazon Kinesis into Apache Druid
+---
+
+Apache Druid can consume data streams from external streaming sources for real-time data ingestion with exactly-once processing guarantees.
+
+## Supported Streaming Sources
+
+<CardGroup cols={2}>
+  <Card title="Apache Kafka" icon="brands fa-kafka" href="/ingestion/kafka">
+    Ingest from Apache Kafka through the bundled Kafka indexing service extension
+  </Card>
+  <Card title="Amazon Kinesis" icon="brands fa-aws" href="/ingestion/kinesis">
+    Ingest from Amazon Kinesis through the bundled Kinesis indexing service extension
+  </Card>
+</CardGroup>
+
+## Key Features
+
+<AccordionGroup>
+  <Accordion title="Exactly-Once Processing" icon="check-double">
+    Each indexing service provides real-time data ingestion with exactly-once stream processing guarantee.
+    
+    Druid achieves this by:
+    - Using Kafka partition and offset mechanism
+    - Using Kinesis shard and sequence number mechanism
+    - Coordinating handoffs through the supervisor
+    - Managing failures with automatic recovery
+  </Accordion>
+  
+  <Accordion title="Real-Time Queries" icon="bolt">
+    Query data as it arrives:
+    
+    - Middle Managers and Indexers can respond to queries with arriving data
+    - No need to wait for segment publishing
+    - Low-latency access to recent events
+  </Accordion>
+  
+  <Accordion title="Late Data Handling" icon="clock">
+    Both streaming sources support ingesting late-arriving data:
+    
+    - Configure `lateMessageRejectionPeriod` to control how late data can be
+    - Supervisor manages segment handoffs to handle out-of-order events
+    - Automatic backfilling for missed data
+  </Accordion>
+</AccordionGroup>
+
+## How Streaming Ingestion Works
+
+<Steps>
+  <Step title="Load Extension">
+    Load the appropriate extension on both Overlord and Middle Manager:
+    - `druid-kafka-indexing-service` for Kafka
+    - `druid-kinesis-indexing-service` for Kinesis
+  </Step>
+  
+  <Step title="Create Supervisor">
+    Submit a supervisor spec through:
+    - Druid web console
+    - Supervisor API
+    
+    The supervisor is a continuously-running process that manages indexing tasks.
+  </Step>
+  
+  <Step title="Supervisor Manages Tasks">
+    The supervisor:
+    - Creates and manages indexing tasks
+    - Coordinates segment handoffs
+    - Manages failures and retries
+    - Ensures scalability and replication requirements
+  </Step>
+  
+  <Step title="Tasks Ingest Data">
+    Indexing tasks:
+    - Read from stream partitions/shards
+    - Process and transform data
+    - Create segments
+    - Publish segments to deep storage
+  </Step>
+</Steps>
+
+## Architecture
+
+```
+                                 ┌─────────────────┐
+                                 │   Overlord      │
+                                 │                │
+                                 │  ┌──────────┐ │
+                                 │  │ Supervisor │ │
+                                 │  └──────────┘ │
+                                 └─────────────────┘
+                                         │
+                    ┌────────────┼────────────┐
+                    │                │                │
+          ┌─────────┴────────┐  ┌────────┴─────────┐
+          │ Middle Manager │  │ Middle Manager  │
+          │                │  │                 │
+          │ ┌───────────┐│  │ ┌───────────┐ │
+          │ │ Task 1     ││  │ │ Task 2     │ │
+          │ │ (reading)  ││  │ │ (reading)  │ │
+          │ └───────────┘│  │ └───────────┘ │
+          └─────────────────┘  └──────────────────┘
+                    │                │
+                    │                │
+                    │                │
+          ┌─────────┴───────────────────────────┐
+          │      Kafka/Kinesis Stream         │
+          │                                   │
+          │  Partition 1  |  Partition 2     │
+          └─────────────────────────────────────┘
+```
+
+## Supervisor Responsibilities
+
+The supervisor oversees the streaming ingestion process:
+
+<Tabs>
+  <Tab title="Task Management">
+    - Creates indexing tasks based on configuration
+    - Monitors task health and status
+    - Restarts failed tasks
+    - Scales tasks up/down based on load
+  </Tab>
+  
+  <Tab title="Partition Assignment">
+    - Assigns stream partitions/shards to tasks
+    - Rebalances assignments on topology changes
+    - Ensures even distribution of work
+  </Tab>
+  
+  <Tab title="Offset Management">
+    - Tracks offsets/sequence numbers per partition
+    - Coordinates segment handoffs
+    - Ensures exactly-once processing
+    - Handles checkpointing
+  </Tab>
+  
+  <Tab title="Failure Recovery">
+    - Detects task failures
+    - Resets tasks to last good checkpoint
+    - Manages retries with backoff
+    - Prevents data loss or duplication
+  </Tab>
+</Tabs>
+
+## Configuration Overview
+
+A streaming supervisor spec consists of three main sections:
+
+<CodeGroup>
+```json Basic Structure
+{
+  "type": "kafka",  // or "kinesis"
+  "spec": {
+    "dataSchema": {
+      // What data to ingest and how to process it
+      "dataSource": "my-datasource",
+      "timestampSpec": { ... },
+      "dimensionsSpec": { ... },
+      "metricsSpec": [ ... ],
+      "granularitySpec": { ... }
+    },
+    "ioConfig": {
+      // Connection and I/O settings
+      "topic": "my-topic",  // or "stream" for Kinesis
+      "consumerProperties": { ... },
+      "inputFormat": { ... },
+      "taskCount": 1,
+      "replicas": 1,
+      "taskDuration": "PT1H"
+    },
+    "tuningConfig": {
+      // Performance tuning
+      "type": "kafka",  // or "kinesis"
+      "maxRowsInMemory": 100000,
+      "maxRowsPerSegment": 5000000
+    }
+  }
+}
+```
+</CodeGroup>
+
+## Comparison: Kafka vs Kinesis
+
+<Tabs>
+  <Tab title="Similarities">
+    Both streaming sources:
+    
+    ✅ Support exactly-once processing  
+    ✅ Handle late-arriving data  
+    ✅ Provide real-time query capabilities  
+    ✅ Managed by supervisors  
+    ✅ Support schema discovery  
+    ✅ Support all input formats
+  </Tab>
+  
+  <Tab title="Kafka-Specific">
+    Apache Kafka features:
+    
+    - Multi-topic ingestion with `topicPattern`
+    - Consumer group management
+    - Header and key parsing
+    - Transactional read support (`isolation.level`)
+    - Custom consumer properties
+  </Tab>
+  
+  <Tab title="Kinesis-Specific">
+    Amazon Kinesis features:
+    
+    - AWS authentication (IAM roles, credentials)
+    - Region-specific endpoints
+    - `ListShards` API support
+    - Enhanced fan-out capabilities
+    - Deaggregation support
+    - Resharding detection
+  </Tab>
+</Tabs>
+
+## Getting Started
+
+<Steps>
+  <Step title="Choose Your Stream">
+    Decide between Kafka or Kinesis based on your infrastructure
+  </Step>
+  
+  <Step title="Load Extension">
+    Add the appropriate extension to your Druid configuration:
+    
+    ```properties
+    druid.extensions.loadList=["druid-kafka-indexing-service"]
+    ```
+    
+    or
+    
+    ```properties
+    druid.extensions.loadList=["druid-kinesis-indexing-service"]
+    ```
+  </Step>
+  
+  <Step title="Create Supervisor Spec">
+    Define your supervisor specification with:
+    - Data schema (what to ingest)
+    - I/O config (how to connect)
+    - Tuning config (performance settings)
+  </Step>
+  
+  <Step title="Submit Supervisor">
+    Submit via web console or API:
+    
+    ```bash
+    curl -X POST -H 'Content-Type: application/json' \
+      -d @supervisor-spec.json \
+      http://overlord:8090/druid/indexer/v1/supervisor
+    ```
+  </Step>
+  
+  <Step title="Monitor Ingestion">
+    Monitor your supervisor and tasks:
+    - Check supervisor status
+    - View task progress
+    - Monitor lag metrics
+    - Review error reports
+  </Step>
+</Steps>
+
+## Performance Considerations
+
+<AccordionGroup>
+  <Accordion title="Task Count and Replicas" icon="sliders">
+    Configure parallelism with `taskCount` and `replicas`:
+    
+    ```json
+    {
+      "ioConfig": {
+        "taskCount": 3,    // 3 tasks per replica
+        "replicas": 2      // 2 replica sets
+      }
+    }
+    ```
+    
+    Total tasks = `taskCount * replicas` = 6 tasks
+    
+    <Warning>
+      Each task consumes one partition/shard, so `taskCount` should not exceed the number of partitions/shards.
+    </Warning>
+  </Accordion>
+  
+  <Accordion title="Task Duration" icon="clock">
+    Balance between real-time queries and segment size:
+    
+    - Shorter duration: More frequent handoffs, smaller segments
+    - Longer duration: Fewer handoffs, larger segments
+    
+    ```json
+    {
+      "ioConfig": {
+        "taskDuration": "PT1H"  // 1 hour task duration
+      }
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Memory Settings" icon="memory">
+    Control memory usage:
+    
+    ```json
+    {
+      "tuningConfig": {
+        "maxRowsInMemory": 100000,
+        "maxBytesInMemory": 134217728,  // 128MB
+        "maxRowsPerSegment": 5000000
+      }
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Autoscaling" icon="arrows-maximize">
+    Enable task autoscaling based on lag:
+    
+    ```json
+    {
+      "ioConfig": {
+        "autoScalerConfig": {
+          "enableTaskAutoScaler": true,
+          "taskCountMax": 10,
+          "taskCountMin": 2,
+          "autoScalerStrategy": "lagBased",
+          "lagCollectionIntervalMillis": 30000
+        }
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Common Use Cases
+
+<CardGroup cols={2}>
+  <Card title="Real-Time Analytics" icon="chart-line">
+    Process and query events as they arrive for real-time dashboards and alerting
+  </Card>
+  <Card title="Log Aggregation" icon="file-lines">
+    Centralize and analyze logs from distributed systems in real-time
+  </Card>
+  <Card title="IoT Data" icon="microchip">
+    Ingest sensor data and device telemetry for monitoring and analysis
+  </Card>
+  <Card title="User Activity" icon="users">
+    Track user events and behavior for analytics and personalization
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="High Lag" icon="triangle-exclamation">
+    If your ingestion is falling behind:
+    
+    1. Increase `taskCount` (up to partition count)
+    2. Enable autoscaling
+    3. Increase `maxRowsPerSegment`
+    4. Add more Middle Manager capacity
+    5. Check for slow queries blocking ingestion
+  </Accordion>
+  
+  <Accordion title="Task Failures" icon="x">
+    If tasks are failing:
+    
+    1. Check task logs for errors
+    2. Verify stream connectivity
+    3. Check data format matches spec
+    4. Review parse exceptions
+    5. Ensure sufficient memory
+  </Accordion>
+  
+  <Accordion title="Parse Errors" icon="bug">
+    If data is not parsing correctly:
+    
+    1. Verify input format configuration
+    2. Check sample data against spec
+    3. Review `parseExceptionHandler` settings
+    4. Monitor `maxParseExceptions` threshold
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Kafka Ingestion" icon="brands fa-kafka" href="/ingestion/kafka">
+    Learn about Kafka-specific configuration
+  </Card>
+  <Card title="Kinesis Ingestion" icon="brands fa-aws" href="/ingestion/kinesis">
+    Learn about Kinesis-specific configuration
+  </Card>
+  <Card title="Supervisor" icon="eye" href="/ingestion/supervisor">
+    Deep dive into supervisor management
+  </Card>
+  <Card title="Data Formats" icon="file-alt" href="/ingestion/data-formats">
+    Explore supported input formats
+  </Card>
+</CardGroup>

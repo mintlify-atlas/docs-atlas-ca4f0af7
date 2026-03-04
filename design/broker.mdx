@@ -1,0 +1,137 @@
+---
+title: "Broker Service"
+description: "Learn how the Broker service routes queries, consolidates results, and manages caching in distributed Druid clusters"
+---
+
+The **Broker service** routes queries in a distributed cluster setup. It interprets the metadata published to ZooKeeper about segment distribution across services and routes queries accordingly. Additionally, the Broker service consolidates result sets from individual services.
+
+## Key Responsibilities
+
+<CardGroup cols={2}>
+  <Card title="Query Routing" icon="route">
+    Determines which Historical and real-time services to forward queries to based on segment distribution
+  </Card>
+  <Card title="Result Consolidation" icon="layer-group">
+    Merges and consolidates results from multiple services into a single response
+  </Card>
+  <Card title="Cache Management" icon="database">
+    Manages per-segment result caching with LRU invalidation strategy
+  </Card>
+  <Card title="Metadata Interpretation" icon="book">
+    Reads segment distribution information from ZooKeeper to build query plans
+  </Card>
+</CardGroup>
+
+## Configuration
+
+For Apache Druid Broker service configuration, see the configuration reference:
+- [Broker Configuration](/configuration/broker)
+- [Basic cluster tuning](/operations/basic-cluster-tuning#broker)
+
+## Running the Broker
+
+```bash
+org.apache.druid.cli.Main server broker
+```
+
+## Forwarding Queries
+
+Most Druid queries contain an interval object that indicates a span of time for which data is requested. Similarly, Druid partitions segments to contain data for some interval of time and distributes the segments across a cluster.
+
+### How Query Forwarding Works
+
+<Steps>
+  <Step title="Build view from ZooKeeper">
+    The Broker service first builds a view of the world from information in ZooKeeper. ZooKeeper maintains information about Historical and streaming ingestion Peon services and the segments they are serving.
+  </Step>
+  <Step title="Build segment timeline">
+    For every datasource in ZooKeeper, the Broker service builds a timeline of segments and the services that serve them.
+  </Step>
+  <Step title="Perform timeline lookup">
+    When queries are received for a specific datasource and interval, the Broker service performs a lookup into the timeline associated with the query datasource for the query interval and retrieves the services that contain data for the query.
+  </Step>
+  <Step title="Forward query">
+    The Broker service then forwards down the query to the selected services.
+  </Step>
+</Steps>
+
+### Example Scenario
+
+<Info>
+Consider a simple datasource with seven segments where each segment contains data for a given day of the week. Any query issued to the datasource for more than one day of data will hit more than one segment. These segments will likely be distributed across multiple services, and hence, the query will likely hit multiple services.
+</Info>
+
+## Caching
+
+Broker services employ a cache with an **LRU (Least Recently Used) cache invalidation strategy**. The Broker cache stores per-segment results.
+
+### Cache Architecture
+
+<Tabs>
+  <Tab title="Local Cache">
+    The cache can be local to each Broker service, providing fast access with no network overhead.
+  </Tab>
+  <Tab title="Distributed Cache">
+    The cache can be shared across multiple services using an external distributed cache such as **memcached**, allowing result sharing across Broker instances.
+  </Tab>
+</Tabs>
+
+### Cache Behavior
+
+Each time a Broker service receives a query:
+
+<Steps>
+  <Step title="Map query to segments">
+    The Broker maps the query to a set of segments that need to be queried.
+  </Step>
+  <Step title="Check cache for existing results">
+    A subset of these segment results may already exist in the cache and the results can be directly pulled from the cache.
+  </Step>
+  <Step title="Forward uncached queries">
+    For any segment results that do not exist in the cache, the Broker service will forward the query to the Historical services.
+  </Step>
+  <Step title="Store new results in cache">
+    Once the Historical services return their results, the Broker will store those results in the cache for future use.
+  </Step>
+</Steps>
+
+<Warning>
+**Real-time segments are never cached** and hence requests for real-time data will always be forwarded to real-time services. Real-time data is perpetually changing and caching the results would be unreliable.
+</Warning>
+
+## HTTP Endpoints
+
+For a list of API endpoints supported by the Broker, see:
+- [Broker API Reference](/api-reference/legacy-metadata-api#broker)
+
+## Architecture Integration
+
+The Broker service integrates with other Druid components:
+
+<Card title="With ZooKeeper" icon="sitemap">
+  - Maintains connection to ZooKeeper cluster for current cluster information
+  - Reads segment distribution metadata
+  - Monitors Historical and Peon service availability
+</Card>
+
+<Card title="With Historical Services" icon="database">
+  - Forwards queries to Historical services that hold relevant segments
+  - Receives and consolidates query results
+  - Does not manage segment loading/unloading (that's the Coordinator's job)
+</Card>
+
+<Card title="With Real-time Services" icon="bolt">
+  - Forwards queries for real-time data to streaming ingestion tasks
+  - Never caches real-time results due to data mutability
+</Card>
+
+## Performance Considerations
+
+<Tip>
+To optimize Broker performance:
+
+1. **Scale horizontally**: Add more Broker instances to handle increased query load
+2. **Configure cache appropriately**: Size local or distributed cache based on your query patterns
+3. **Monitor query distribution**: Ensure queries are evenly distributed across Historical services
+4. **Tune connection pools**: Adjust the number of connections to Historical services based on cluster size
+</Tip>

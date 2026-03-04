@@ -1,0 +1,413 @@
+---
+title: Datasources
+description: Learn about Apache Druid datasource types including table, lookup, union, query, join, inline, and unnest datasources
+---
+
+Datasources in Apache Druid are things that you can query. The most common kind is a table datasource, created through [data ingestion](../ingestion). At query time, many other datasource types are available for advanced querying.
+
+<Note>
+The word "datasource" is spelled `dataSource` (with a capital S) in API requests and responses.
+</Note>
+
+## Table Datasource
+
+<Tabs>
+<Tab title="SQL">
+
+```sql
+SELECT column1, column2 FROM "druid"."dataSourceName"
+```
+
+</Tab>
+<Tab title="Native">
+
+```json
+{
+  "queryType": "scan",
+  "dataSource": "dataSourceName",
+  "columns": ["column1", "column2"],
+  "intervals": ["0000/3000"]
+}
+```
+
+</Tab>
+</Tabs>
+
+Table datasources are the most common type, created through [data ingestion](../ingestion). They are:
+- Split into segments
+- Distributed around the cluster
+- Queried in parallel
+
+In [Druid SQL](sql#from), table datasources reside in the `druid` schema (default). Reference as `druid.dataSourceName` or simply `dataSourceName`.
+
+In native queries, reference by name (string) or using JSON:
+
+```json
+"dataSource": {
+  "type": "table",
+  "name": "dataSourceName"
+}
+```
+
+**List all tables:**
+
+```sql
+SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'druid'
+```
+
+## Lookup Datasource
+
+<Tabs>
+<Tab title="SQL">
+
+```sql
+SELECT k, v FROM lookup.countries
+```
+
+</Tab>
+<Tab title="Native">
+
+```json
+{
+  "queryType": "scan",
+  "dataSource": {
+    "type": "lookup",
+    "lookup": "countries"
+  },
+  "columns": ["k", "v"],
+  "intervals": ["0000/3000"]
+}
+```
+
+</Tab>
+</Tabs>
+
+Lookup datasources correspond to Druid's key-value [lookup objects](lookups). They:
+- Reside in the `lookup` schema in SQL
+- Are preloaded in memory on all servers
+- Can be joined with regular tables
+- Always have exactly two columns: `k` (key) and `v` (value), both strings
+
+<Tip>
+**Performance tip:** The SQL `LOOKUP` function is usually faster than joining to a lookup datasource because it can defer evaluation until after aggregation.
+</Tip>
+
+**List all lookups:**
+
+```sql
+SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'lookup'
+```
+
+## Union Datasource
+
+<Tabs>
+<Tab title="SQL">
+
+```sql
+SELECT column1, column2
+FROM (
+  SELECT column1, column2 FROM table1
+  UNION ALL
+  SELECT column1, column2 FROM table2
+  UNION ALL
+  SELECT column1, column2 FROM table3
+)
+```
+
+</Tab>
+<Tab title="Native">
+
+```json
+{
+  "queryType": "scan",
+  "dataSource": {
+    "type": "union",
+    "dataSources": ["table1", "table2", "table3"]
+  },
+  "columns": ["column1", "column2"],
+  "intervals": ["0000/3000"]
+}
+```
+
+</Tab>
+</Tabs>
+
+Union datasources treat two or more tables as a single datasource:
+
+**SQL requirements:**
+- Same columns must be selected from each table in same order
+- Column types must match or be implicitly castable
+- Cannot use expressions, column aliasing, JOIN, GROUP BY, or ORDER BY
+
+**Native behavior:**
+- Tables don't need identical schemas
+- Columns in one table but not another are treated as null
+- Rows may process in interleaved fashion (not guaranteed order)
+
+### Dynamic Table Append
+
+Simplify union syntax with `TABLE(APPEND())`:
+
+```sql
+SELECT column1, column2, column3
+FROM TABLE(APPEND('table1', 'table2', 'table3'))
+```
+
+This automatically matches columns by name across tables. For example:
+- `table1` has `column1`
+- `table2` has `column2`  
+- `table3` has `column1`, `column2`, `column3`
+
+The result includes all columns with NULL for missing values.
+
+<Warning>
+Only catalog-defined tables are supported. Common table expressions (CTEs) will fail with "table not found" errors.
+</Warning>
+
+## Inline Datasource
+
+<Tabs>
+<Tab title="SQL">
+
+```sql
+SELECT * FROM (
+  VALUES 
+    ('United States', 'San Francisco'),
+    ('Canada', 'Calgary')
+) t (country, city)
+```
+
+</Tab>
+<Tab title="Native">
+
+```json
+{
+  "queryType": "scan",
+  "dataSource": {
+    "type": "inline",
+    "columnNames": ["country", "city"],
+    "rows": [
+      ["United States", "San Francisco"],
+      ["Canada", "Calgary"]
+    ]
+  },
+  "columns": ["country", "city"],
+  "intervals": ["0000/3000"]
+}
+```
+
+</Tab>
+</Tabs>
+
+Inline datasources embed small amounts of data directly in queries. Use cases:
+- Query small datasets without loading them first
+- Provide inputs to joins
+- Internal use for broker-side subquery processing
+
+## Query Datasource
+
+<Tabs>
+<Tab title="SQL">
+
+```sql
+-- Count hits per page, then calculate average
+SELECT AVG(hits) AS average_hits_per_page
+FROM (
+  SELECT page, COUNT(*) AS hits 
+  FROM site_traffic 
+  GROUP BY page
+)
+```
+
+</Tab>
+<Tab title="Native">
+
+```json
+{
+  "queryType": "timeseries",
+  "dataSource": {
+    "type": "query",
+    "query": {
+      "queryType": "groupBy",
+      "dataSource": "site_traffic",
+      "intervals": ["0000/3000"],
+      "granularity": "all",
+      "dimensions": ["page"],
+      "aggregations": [
+        {"type": "count", "name": "hits"}
+      ]
+    }
+  },
+  "intervals": ["0000/3000"],
+  "granularity": "all",
+  "aggregations": [
+    {"type": "longSum", "name": "hits", "fieldName": "hits"},
+    {"type": "count", "name": "pages"}
+  ],
+  "postAggregations": [
+    {"type": "expression", "name": "average_hits_per_page", "expression": "hits / pages"}
+  ]
+}
+```
+
+</Tab>
+</Tabs>
+
+Query datasources allow subqueries in:
+- FROM clause: `FROM (<subquery>)`
+- JOIN inputs: `t1 INNER JOIN (<subquery>) t2 ON ...`
+- WHERE clause: `WHERE col IN (<subquery>)`
+
+<Warning>
+**Performance consideration:** Subquery results are typically buffered in memory on the Broker. Large result sets can cause bottlenecks or exceed memory limits.
+</Warning>
+
+## Join Datasource
+
+<Tabs>
+<Tab title="SQL">
+
+```sql
+-- Get sales by country using lookup join
+SELECT
+  store_to_country.v AS country,
+  SUM(sales.revenue) AS country_revenue
+FROM sales
+INNER JOIN lookup.store_to_country ON sales.store = store_to_country.k
+GROUP BY store_to_country.v
+```
+
+</Tab>
+<Tab title="Native">
+
+```json
+{
+  "queryType": "groupBy",
+  "dataSource": {
+    "type": "join",
+    "left": "sales",
+    "right": {
+      "type": "lookup",
+      "lookup": "store_to_country"
+    },
+    "rightPrefix": "r.",
+    "condition": "store == \"r.k\"",
+    "joinType": "INNER"
+  },
+  "intervals": ["0000/3000"],
+  "granularity": "all",
+  "dimensions": [
+    {"type": "default", "outputName": "country", "dimension": "r.v"}
+  ],
+  "aggregations": [
+    {"type": "longSum", "name": "country_revenue", "fieldName": "revenue"}
+  ]
+}
+```
+
+</Tab>
+</Tabs>
+
+Join datasources enable SQL-style joins using broadcast hash-join:
+
+**Native join requirements:**
+- All datasources except leftmost must fit in memory
+- Condition must be equality between left and right expressions
+- Supported join types: `INNER`, `LEFT`
+
+**Native join properties:**
+
+| Property | Description | Required |
+|----------|-------------|----------|
+| `left` | Left datasource (table, join, lookup, query, inline) | Yes |
+| `right` | Right datasource (lookup, query, inline only) | Yes |
+| `rightPrefix` | Prefix for right-side columns to prevent collisions | Yes |
+| `condition` | Equality expression like `leftCol == "rightPrefix.rightCol"` | Yes |
+| `joinType` | `INNER` or `LEFT` | Yes |
+
+### SQL Join Syntax
+
+```sql
+<table1> [INNER | LEFT [OUTER]] JOIN <table2> ON <condition>
+```
+
+**Efficient conditions:**
+- Field equality: `t1.x = t2.x`
+- Function on one side: `LOWER(t1.x) = t2.x`
+- `IS NOT DISTINCT FROM` for null-matching equality
+
+**Check for inefficient joins:**
+
+Run `EXPLAIN PLAN FOR <query>` and look for:
+- `query` type datasources under `left` or `right` (indicates subquery insertion)
+- `condition` set to `"1"` (cartesian product) followed by a filter
+
+### Join Performance Tips
+
+1. Use [`LOOKUP` function](sql-scalar#string-functions) instead of joining lookups when possible (faster)
+2. Match column types in join conditions to avoid implicit subqueries
+3. Place predicates and filters carefully (Druid doesn't push predicates past joins)
+4. Avoid comma joins (implicit cross joins)
+
+### Join Limitations
+
+- Join order is not optimized
+- RIGHT OUTER and FULL OUTER not fully implemented
+- Cannot join on multi-value dimensions
+- Preloaded dimension tables wider than lookups not supported
+
+## Unnest Datasource
+
+The unnest datasource expands array values into multiple rows:
+
+**Input:**
+
+| Nested |
+|--------|
+| [a, b] |
+| [c, d] |
+| [e, [f,g]] |
+
+**Output:**
+
+| Unnested |
+|----------|
+| a |
+| b |
+| c |
+| d |
+| e |
+| [f, g] |
+
+### Native Syntax
+
+```json
+{
+  "dataSource": {
+    "type": "unnest",
+    "base": {
+      "type": "table",
+      "name": "nested_data"
+    },
+    "virtualColumn": {
+      "type": "expression",
+      "name": "output_column",
+      "expression": "\"column_reference\""
+    },
+    "unnestFilter": null
+  }
+}
+```
+
+**Properties:**
+- `base` - Source datasource to unnest
+- `virtualColumn` - Virtual column referencing array to unnest
+- `unnestFilter` - Optional filter on output column only
+
+**Key behaviors:**
+- Total row count grows to accommodate unnested values
+- Can unnest multiple columns (creates many rows)
+- Does not remove duplicates or nulls
+- Arrays of complex objects not supported
+
+SQL equivalent: `CROSS JOIN UNNEST(...)` - see [SQL documentation](sql#unnest).

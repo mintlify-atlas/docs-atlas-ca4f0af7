@@ -1,0 +1,174 @@
+---
+title: "SQL JDBC Driver"
+description: "Connect to Druid using the Avatica JDBC driver for SQL queries"
+---
+
+<Note>
+Apache Druid supports two query languages: Druid SQL and native queries. This document describes using the JDBC driver for SQL queries.
+</Note>
+
+You can make Druid SQL queries using the [Avatica JDBC driver](https://calcite.apache.org/avatica/downloads/). We recommend using Avatica JDBC driver version 1.23.0 or later.
+
+## Connection string
+
+The basic connection string format:
+
+```text
+jdbc:avatica:remote:url=http://localhost:8888/druid/v2/sql/avatica/;transparent_reconnection=true
+```
+
+For protobuf protocol instead of JSON:
+
+```text
+jdbc:avatica:remote:url=http://localhost:8888/druid/v2/sql/avatica-protobuf/;transparent_reconnection=true;serialization=protobuf
+```
+
+<ParamField path="url" type="string" required>
+  The `/druid/v2/sql/avatica/` endpoint on the Router, which provides connection stickiness.
+</ParamField>
+
+<ParamField path="transparent_reconnection" type="boolean" default="true">
+  Maintains connection if the Broker pool changes membership or a Broker restarts.
+</ParamField>
+
+<ParamField path="serialization" type="string">
+  Set to `protobuf` when using the protobuf endpoint for better performance with large result sets.
+</ParamField>
+
+## Connection stickiness
+
+Druid's JDBC server does not share connection state between Brokers. You must either:
+
+- Connect to a specific Broker, or
+- Use a load balancer with sticky sessions
+- Use the Druid Router process (provides stickiness automatically)
+
+The non-JDBC JSON over HTTP API is stateless and doesn't require stickiness.
+
+## Java code example
+
+```java
+import java.sql.*;
+import java.util.Properties;
+
+public class DruidJDBCExample {
+    public static void main(String[] args) throws SQLException {
+        // Connect to /druid/v2/sql/avatica/ on your Router
+        String url = "jdbc:avatica:remote:url=http://localhost:8888/druid/v2/sql/avatica/;transparent_reconnection=true";
+
+        // Set connection context parameters
+        Properties connectionProperties = new Properties();
+        connectionProperties.setProperty("sqlTimeZone", "Etc/UTC");
+        
+        // For basic authentication
+        connectionProperties.setProperty("user", "admin");
+        connectionProperties.setProperty("password", "password1");
+
+        try (Connection connection = DriverManager.getConnection(url, connectionProperties)) {
+            try (
+                final Statement statement = connection.createStatement();
+                final ResultSet resultSet = statement.executeQuery("SELECT * FROM wikipedia LIMIT 10")
+            ) {
+                while (resultSet.next()) {
+                    // Process result set
+                    String timestamp = resultSet.getString("__time");
+                    String user = resultSet.getString("user");
+                    System.out.println(timestamp + " - " + user);
+                }
+            }
+        }
+    }
+}
+```
+
+## Dynamic parameters
+
+You can use parameterized queries with PreparedStatement:
+
+```java
+PreparedStatement statement = connection.prepareStatement(
+    "SELECT COUNT(*) AS cnt FROM druid.foo WHERE dim1 = ? OR dim1 = ?"
+);
+statement.setString(1, "abc");
+statement.setString(2, "def");
+final ResultSet resultSet = statement.executeQuery();
+```
+
+### Array parameters
+
+Using STRING_TO_ARRAY:
+
+```java
+PreparedStatement statement = connection.prepareStatement(
+    "SELECT l1 FROM numfoo WHERE SCALAR_IN_ARRAY(l1, STRING_TO_ARRAY(CAST(? as varchar),','))"
+);
+List<Integer> li = ImmutableList.of(0, 7);
+String sqlArg = Joiner.on(",").join(li);
+statement.setString(1, sqlArg);
+statement.executeQuery();
+```
+
+Using native arrays:
+
+```java
+PreparedStatement statement = connection.prepareStatement(
+    "SELECT l1 FROM numfoo WHERE SCALAR_IN_ARRAY(l1, ?)"
+);
+Iterable<Object> list = ImmutableList.of(0, 7);
+ArrayFactoryImpl arrayFactoryImpl = new ArrayFactoryImpl(TimeZone.getDefault());
+AvaticaType type = ColumnMetaData.scalar(Types.INTEGER, SqlType.INTEGER.name(), Rep.INTEGER);
+Array array = arrayFactoryImpl.createArray(type, list);
+statement.setArray(1, array);
+statement.executeQuery();
+```
+
+## Metadata access
+
+Table metadata is available through standard JDBC methods or by querying INFORMATION_SCHEMA:
+
+```java
+// Using JDBC metadata
+DatabaseMetaData metaData = connection.getMetaData();
+ResultSet tables = metaData.getTables(null, "druid", "wikipedia", null);
+
+// Using INFORMATION_SCHEMA
+String query = "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS " +
+               "WHERE TABLE_NAME = 'wikipedia' AND TABLE_SCHEMA = 'druid'";
+ResultSet rs = statement.executeQuery(query);
+while (rs.next()) {
+    String columnName = rs.getString("COLUMN_NAME");
+    String dataType = rs.getString("DATA_TYPE");
+    System.out.println(columnName + ": " + dataType);
+}
+```
+
+## Prerequisites
+
+Before using the JDBC driver:
+
+- **Java version**: Use a [supported Java version](https://druid.apache.org/docs/latest/operations/java)
+- **Avatica JDBC driver**: Download from [Apache Calcite Avatica](https://calcite.apache.org/avatica/downloads/)
+- **Running Druid instance**: Available and accessible
+- **Authentication**: Configure if your deployment requires it
+
+## Context parameters
+
+Set SQL query context parameters using the Properties object. Available parameters include:
+
+- `sqlTimeZone`: Set query timezone (e.g., "America/Los_Angeles")
+- `useCache`: Enable/disable result caching
+- `populateCache`: Control cache population
+- `useApproximateCountDistinct`: Use approximate algorithms
+- `useApproximateTopN`: Use approximate TopN
+
+See the [SQL query context documentation](https://druid.apache.org/docs/latest/querying/sql-query-context) for all available parameters.
+
+## Protobuf endpoint
+
+The protobuf endpoint offers reduced overhead and better performance for large result sets:
+
+```java
+String url = "jdbc:avatica:remote:url=http://localhost:8888/druid/v2/sql/avatica-protobuf/;transparent_reconnection=true;serialization=protobuf";
+```
+
+The protobuf endpoint also works with the [official Golang Avatica driver](https://github.com/apache/calcite-avatica-go).

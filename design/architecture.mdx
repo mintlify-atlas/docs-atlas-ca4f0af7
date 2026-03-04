@@ -1,0 +1,320 @@
+---
+title: Architecture
+description: Learn about Druid's distributed architecture, services, and how they work together
+---
+
+Druid has a distributed architecture that is designed to be cloud-friendly and easy to operate. You can configure and scale services independently for maximum flexibility over cluster operations. This design includes enhanced fault tolerance: an outage of one component does not immediately affect other components.
+
+## Architecture overview
+
+The following diagram shows the services that make up the Druid architecture, their typical arrangement across servers, and how queries and data flow through this architecture.
+
+![Druid architecture](https://druid.apache.org/docs/latest/assets/druid-architecture.svg)
+
+## Druid services
+
+Druid has several types of services, each responsible for specific aspects of data processing and query execution:
+
+<CardGroup cols={2}>
+  <Card title="Coordinator" icon="sitemap">
+    Manages data availability on the cluster
+  </Card>
+  <Card title="Overlord" icon="tasks">
+    Controls the assignment of data ingestion workloads
+  </Card>
+  <Card title="Broker" icon="shuffle">
+    Handles queries from external clients
+  </Card>
+  <Card title="Router" icon="route">
+    Routes requests to Brokers, Coordinators, and Overlords
+  </Card>
+  <Card title="Historical" icon="database">
+    Stores queryable data
+  </Card>
+  <Card title="Middle Manager" icon="server">
+    Ingests data through Peon processes
+  </Card>
+  <Card title="Indexer" icon="gears">
+    Alternative to Middle Manager + Peon task execution
+  </Card>
+</CardGroup>
+
+## Server types
+
+For ease of deployment, we recommend organizing Druid services into three server types: Master, Query, and Data.
+
+### Master server
+
+A Master server manages data ingestion and availability. It is responsible for starting new ingestion jobs and coordinating availability of data on the Data server.
+
+Master servers divide operations between Coordinator and Overlord services.
+
+<Tabs>
+  <Tab title="Coordinator service">
+    The Coordinator service watches over the Historical services on the Data servers. It is responsible for:
+
+    - **Segment assignment**: Assigning segments to specific servers
+    - **Load balancing**: Ensuring segments are well-balanced across Historicals
+    - **Replication**: Managing segment replication across multiple nodes
+    - **Segment lifecycle**: Loading new segments and dropping outdated ones
+
+    The Coordinator runs its duties periodically. On each run, it assesses the current state of the cluster before deciding on the appropriate actions to take. It maintains connections to ZooKeeper for current cluster information and to the metadata database containing information about used segments and loading rules.
+
+    #### How segment assignment works
+
+    Before any unassigned segments are serviced by Historical services, the Historical services for each tier are first sorted in terms of capacity, with least capacity servers having the highest priority. Unassigned segments are always assigned to the services with least capacity to maintain a level of balance between services.
+
+    The Coordinator does not directly communicate with a Historical service when assigning it a new segment. Instead, the Coordinator creates temporary information about the new segment under the load queue path of the Historical service in ZooKeeper. Once this request is seen, the Historical service loads the segment and begins servicing it.
+
+    #### Balancing strategies
+
+    The Coordinator employs different strategies to balance segments across Historicals:
+
+    - **cost** (default): Picks the server with the minimum "cost" of placing a segment. The cost is a function of the data interval of the segment and the data intervals of all segments already present on the candidate server. This strategy tries to avoid placing segments with adjacent or overlapping data intervals on the same server.
+    - **diskNormalized**: A derivative of the cost strategy that weights the cost with the disk usage ratio of the server
+    - **random**: Distributes segments randomly across servers (experimental)
+
+    <Info>
+    All strategies prioritize moving segments from the Historical with the least available disk space.
+    </Info>
+
+    #### Automatic compaction
+
+    The Coordinator manages the automatic compaction system. Each run, the Coordinator compacts segments by merging small segments or splitting large ones. This is useful when the size of your segments is not optimized, which may degrade query performance.
+  </Tab>
+  <Tab title="Overlord service">
+    The Overlord service is responsible for accepting tasks, coordinating task distribution, creating locks around tasks, and returning statuses to callers.
+
+    The Overlord can be configured to run in one of two modes:
+
+    - **Local mode**: The Overlord creates Peons for executing tasks. All Middle Manager and Peon configurations must be provided. This mode is typically used for simple workflows.
+    - **Remote mode**: The Overlord and Middle Manager run in separate services and you can run each on a different server. This mode is recommended if you intend to use the indexing service as the single endpoint for all Druid indexing.
+
+    #### Task management features
+
+    - **Worker blacklisting**: If a Middle Manager has task failures above a threshold, the Overlord will blacklist these Middle Managers. No more than 20% of the Middle Managers can be blacklisted. Blacklisted Middle Managers will be periodically whitelisted.
+    - **Autoscaling**: If enabled, new Middle Managers may be added when a task has been in pending state for too long. Middle Managers may be terminated if they have not run any tasks for a period of time.
+  </Tab>
+</Tabs>
+
+<Note>
+You can run the Coordinator and Overlord services as a single combined service by setting the `druid.coordinator.asOverlord.enabled` property.
+</Note>
+
+### Query server
+
+A Query server provides the endpoints that users and client applications interact with, routing queries to Data servers or other Query servers (and optionally proxied Master server requests).
+
+Query servers divide operations between Broker and Router services.
+
+<Tabs>
+  <Tab title="Broker service">
+    The Broker service receives queries from external clients and forwards those queries to Data servers. When Brokers receive results from those subqueries, they merge those results and return them to the caller.
+
+    #### Query routing
+
+    To determine which services to forward queries to, the Broker service first builds a view of the world from information in ZooKeeper. ZooKeeper maintains information about Historical and streaming ingestion Peon services and the segments they are serving.
+
+    For every datasource in ZooKeeper, the Broker service builds a timeline of segments and the services that serve them. When queries are received for a specific datasource and interval, the Broker service performs a lookup into the timeline associated with the query datasource for the query interval and retrieves the services that contain data for the query.
+
+    <Steps>
+      <Step title="Query received">
+        Broker receives a query for a specific datasource and time interval
+      </Step>
+      <Step title="Segment lookup">
+        Broker maps the query to a set of segments covering the requested interval
+      </Step>
+      <Step title="Cache check">
+        Broker checks if segment results exist in the cache
+      </Step>
+      <Step title="Forward to Historicals">
+        For uncached segments, Broker forwards the query to Historical services
+      </Step>
+      <Step title="Merge results">
+        Broker merges results from cache and Historical services
+      </Step>
+      <Step title="Return to client">
+        Broker returns the final merged result to the caller
+      </Step>
+    </Steps>
+
+    #### Caching
+
+    Broker services employ a cache with an LRU cache invalidation strategy. The Broker cache stores per-segment results. The cache can be local to each Broker service or shared across multiple services using an external distributed cache such as memcached.
+
+    <Warning>
+    Real-time segments are never cached. Requests for real-time data will always be forwarded to real-time services because real-time data is perpetually changing and caching the results would be unreliable.
+    </Warning>
+  </Tab>
+  <Tab title="Router service">
+    The Router service provides a unified API gateway in front of Brokers, Overlords, and Coordinators. It routes requests to the appropriate service based on the request type.
+
+    The Router service also runs the web console, a UI for:
+    - Loading data
+    - Managing datasources and tasks
+    - Viewing server status and segment information
+  </Tab>
+</Tabs>
+
+<Info>
+Typically, you query Brokers rather than querying Historical or Middle Manager services on Data servers directly.
+</Info>
+
+### Data server
+
+A Data server executes ingestion jobs and stores queryable data.
+
+Data servers divide operations between Historical and Middle Manager services.
+
+<Tabs>
+  <Tab title="Historical service">
+    The Historical service handles storage and querying on historical data, including any streaming data that has been in the system long enough to be committed. Historical services download segments from deep storage and respond to queries about these segments. They don't accept writes.
+
+    #### Loading and serving segments
+
+    Each Historical service copies or pulls segment files from deep storage to local disk in an area called the segment cache. The Coordinator controls the assignment of segments to Historicals and the balance of segments between Historicals.
+
+    Historical services do not communicate directly with each other, nor do they communicate directly with the Coordinator. Instead, the Coordinator creates ephemeral entries in ZooKeeper in a load queue path. Each Historical service maintains a connection to ZooKeeper, watching those paths for segment information.
+
+    <Steps>
+      <Step title="Detect new segment">
+        Historical detects a new entry in the ZooKeeper load queue
+      </Step>
+      <Step title="Check cache">
+        Historical checks its own segment cache for the segment
+      </Step>
+      <Step title="Retrieve metadata">
+        If not cached, Historical retrieves metadata from ZooKeeper about the segment, including where it's located in deep storage
+      </Step>
+      <Step title="Download segment">
+        Historical pulls down and processes the segment from deep storage
+      </Step>
+      <Step title="Announce availability">
+        Historical advertises the segment as available for queries via ZooKeeper
+      </Step>
+    </Steps>
+
+    #### Memory-mapped caching
+
+    The segment cache uses memory mapping. The cache consumes memory from the underlying operating system so Historicals can hold parts of segment files in memory to increase query performance at the data level.
+
+    At query time:
+    - If the required part of a segment file is available in the memory mapped cache ("page cache"), the Historical reads it directly from memory
+    - If it is not in the memory-mapped cache, the Historical reads that part of the segment from disk
+
+    <Note>
+    This memory-mapped segment cache is in addition to other query-level caches. To make data available for querying as soon as possible, Historical services search the local segment cache upon startup and advertise the segments found there.
+    </Note>
+  </Tab>
+  <Tab title="Middle Manager service">
+    The Middle Manager service is a worker service that executes submitted tasks. Middle Managers forward tasks to Peons that run in separate JVMs. Druid uses separate JVMs for tasks to isolate resources and logs.
+
+    Each Peon is capable of running only one task at a time, whereas a Middle Manager may have multiple Peons.
+
+    #### Peon service
+
+    Peons are task execution engines spawned by Middle Managers. Each Peon:
+    - Runs in a separate JVM
+    - Is responsible for executing a single task
+    - Always runs on the same host as the Middle Manager that spawned it
+  </Tab>
+  <Tab title="Indexer service (optional)">
+    The Indexer service is an alternative to Middle Managers and Peons. Instead of forking separate JVM processes per-task, the Indexer runs tasks as individual threads within a single JVM process.
+
+    The Indexer is designed to:
+    - Be easier to configure and deploy compared to the MiddleManager + Peon system
+    - Better enable resource sharing across tasks
+    - Help streaming ingestion performance
+
+    <Warning>
+    The Indexer is currently designated as experimental.
+    </Warning>
+
+    <Note>
+    Typically, you would deploy one of the following: MiddleManagers, MiddleManager-less ingestion using Kubernetes, or Indexers. You wouldn't deploy more than one of these options.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Service colocation
+
+Colocating Druid services by server type generally results in better utilization of hardware resources for most clusters. For very large scale clusters, it can be desirable to split the Druid services such that they run on individual servers to avoid resource contention.
+
+### Coordinators and Overlords
+
+The workload on the Coordinator service tends to increase with the number of segments in the cluster. The Overlord's workload also increases based on the number of segments in the cluster, but to a lesser degree than the Coordinator.
+
+<Info>
+In clusters with very high segment counts, it can make sense to separate the Coordinator and Overlord services to provide more resources for the Coordinator's segment balancing workload.
+</Info>
+
+### Historicals and Middle Managers
+
+With higher levels of ingestion or query load, it can make sense to deploy the Historical and Middle Manager services on separate hosts to avoid CPU and memory contention.
+
+The Historical service also benefits from having free memory for memory mapped segments, which can be another reason to deploy the Historical and Middle Manager services separately.
+
+## External dependencies
+
+In addition to its built-in service types, Druid also has three external dependencies. These are intended to be able to leverage existing infrastructure, where present.
+
+### Deep storage
+
+Druid uses deep storage to store any data that has been ingested into the system. Deep storage is shared file storage accessible by every Druid server. In a clustered deployment, this is typically a distributed object store like S3 or HDFS, or a network mounted filesystem. In a single-server deployment, this is typically local disk.
+
+<Tabs>
+  <Tab title="Purpose">
+    Druid uses deep storage for the following purposes:
+
+    - **Data persistence**: To store all the data you ingest. Segments that get loaded onto Historical services for low latency queries are also kept in deep storage for backup purposes.
+    - **Query from deep storage**: Segments that are only in deep storage can be used for queries from deep storage
+    - **Data transfer**: As a way to transfer data in the background between Druid services
+  </Tab>
+  <Tab title="Performance considerations">
+    Historical services cache data segments on local disk and serve queries from that cache as well as from an in-memory cache. Segments on disk for Historical services provide the low latency querying performance Druid is known for.
+
+    You can also query directly from deep storage. When you query segments that exist only in deep storage, you trade some performance for the ability to query more of your data without necessarily having to scale your Historical services.
+  </Tab>
+  <Tab title="Sizing">
+    When determining sizing for your storage, keep the following in mind:
+
+    - **Deep storage** needs to be able to hold all the data that you ingest into Druid
+    - **On-disk storage for Historicals** needs to accommodate the data you want to load onto them to run queries. The data on Historical services should be data you access frequently and need to run low latency queries for
+  </Tab>
+</Tabs>
+
+<Info>
+Deep storage is an important part of Druid's elastic, fault-tolerant design. Druid bootstraps from deep storage even if every single data server is lost and re-provisioned.
+</Info>
+
+### Metadata storage
+
+The metadata storage holds various shared system metadata such as segment usage information and task information. In a clustered deployment, this is typically a traditional RDBMS like PostgreSQL or MySQL. In a single-server deployment, it is typically a locally-stored Apache Derby database.
+
+### ZooKeeper
+
+ZooKeeper is used for internal service discovery, coordination, and leader election. It maintains critical information about:
+
+- Historical and Peon services
+- Segment distribution and availability
+- Service health and status
+- Coordination between services
+
+## Learn more
+
+See the following topics for more information:
+
+<CardGroup cols={2}>
+  <Card title="Storage components" icon="hard-drive" href="https://druid.apache.org/docs/latest/design/storage.html">
+    Learn about data storage in Druid
+  </Card>
+  <Card title="Segments" icon="table" href="https://druid.apache.org/docs/latest/design/segments.html">
+    Learn about segment files
+  </Card>
+  <Card title="Query processing" icon="magnifying-glass" href="https://druid.apache.org/docs/latest/querying/query-processing.html">
+    High-level overview of how Druid processes queries
+  </Card>
+  <Card title="Web console" icon="browser" href="https://druid.apache.org/docs/latest/operations/web-console.html">
+    Learn about the Druid web console UI
+  </Card>
+</CardGroup>

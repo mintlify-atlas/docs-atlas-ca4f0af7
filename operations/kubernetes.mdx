@@ -1,0 +1,605 @@
+---
+title: "Kubernetes Deployment"
+description: "Deploy and manage Apache Druid on Kubernetes using Docker containers and the Druid Operator"
+---
+
+Apache Druid can be deployed on Kubernetes using Docker containers and the druid-operator for simplified cluster management.
+
+## Docker Images
+
+Official Druid Docker images are available on Docker Hub and can be pulled directly.
+
+### Pull Druid Image
+
+<CodeGroup>
+```bash Latest Release
+docker pull apache/druid
+```
+
+```bash Specific Version
+docker pull apache/druid:28.0.0
+```
+
+```bash Verify Image
+docker images apache/druid
+```
+</CodeGroup>
+
+<Info>
+Find all available versions on [Docker Hub: apache/druid](https://hub.docker.com/r/apache/druid).
+</Info>
+
+## Druid Operator
+
+The [druid-operator](https://github.com/datainfrahq/druid-operator) provides Kubernetes-native management of Druid clusters.
+
+### Features
+
+<CardGroup cols={2}>
+  <Card title="Declarative Management" icon="file-code">
+    Define cluster state with Kubernetes CRDs
+  </Card>
+  <Card title="Automatic Scaling" icon="arrows-maximize">
+    Scale Druid components independently
+  </Card>
+  <Card title="Rolling Updates" icon="rotate">
+    Zero-downtime upgrades and configuration changes
+  </Card>
+  <Card title="High Availability" icon="shield">
+    Built-in HA for all Druid components
+  </Card>
+</CardGroup>
+
+### Installation
+
+<Steps>
+  <Step title="Install the Operator">
+    ```bash
+    kubectl create namespace druid-operator
+    kubectl apply -f https://raw.githubusercontent.com/datainfrahq/druid-operator/master/config/manager/manager.yaml
+    ```
+  </Step>
+  
+  <Step title="Verify Installation">
+    ```bash
+    kubectl get pods -n druid-operator
+    ```
+  </Step>
+  
+  <Step title="Create Druid Cluster">
+    Apply a Druid cluster manifest:
+    ```bash
+    kubectl apply -f druid-cluster.yaml
+    ```
+  </Step>
+</Steps>
+
+### Example Cluster Configuration
+
+<CodeGroup>
+```yaml druid-cluster.yaml
+apiVersion: druid.apache.org/v1alpha1
+kind: Druid
+metadata:
+  name: druid-cluster
+  namespace: druid
+spec:
+  image: apache/druid:28.0.0
+  startScript: /druid.sh
+  
+  # Metadata storage
+  metadataStore:
+    type: postgresql
+    host: postgres.druid.svc.cluster.local
+    port: 5432
+    database: druid
+    
+  # Deep storage
+  deepStorage:
+    type: s3
+    bucket: my-druid-bucket
+    baseKey: druid/segments
+  
+  # ZooKeeper
+  zookeeper:
+    zkHosts: zk-cs.druid.svc.cluster.local:2181
+    
+  # Common runtime properties
+  commonRuntimeProperties: |
+    druid.extensions.loadList=["druid-kafka-indexing-service", "druid-s3-extensions"]
+    druid.startup.logging.logProperties=true
+    
+  # Node specifications
+  nodes:
+    coordinators:
+      nodeType: coordinator
+      druid.port: 8081
+      replicas: 2
+      resources:
+        requests:
+          memory: "4Gi"
+          cpu: "2"
+        limits:
+          memory: "4Gi"
+          cpu: "2"
+      runtime.properties: |
+        druid.coordinator.startDelay=PT30S
+        druid.coordinator.period=PT30S
+        
+    brokers:
+      nodeType: broker
+      druid.port: 8082
+      replicas: 3
+      resources:
+        requests:
+          memory: "8Gi"
+          cpu: "4"
+        limits:
+          memory: "8Gi"
+          cpu: "4"
+      runtime.properties: |
+        druid.broker.http.numConnections=10
+        druid.server.http.numThreads=40
+        
+    historicals:
+      nodeType: historical
+      druid.port: 8083
+      replicas: 3
+      resources:
+        requests:
+          memory: "16Gi"
+          cpu: "8"
+        limits:
+          memory: "16Gi"
+          cpu: "8"
+      runtime.properties: |
+        druid.processing.numThreads=7
+        druid.processing.buffer.sizeBytes=536870912
+        druid.segmentCache.locations=[{"path":"/druid/data/segments","maxSize":"100g"}]
+      volumeMounts:
+        - mountPath: /druid/data
+          name: data-volume
+      volumes:
+        - name: data-volume
+          persistentVolumeClaim:
+            claimName: historical-data
+            
+    middleManagers:
+      nodeType: middleManager
+      druid.port: 8091
+      replicas: 2
+      resources:
+        requests:
+          memory: "8Gi"
+          cpu: "4"
+        limits:
+          memory: "8Gi"
+          cpu: "4"
+      runtime.properties: |
+        druid.worker.capacity=4
+        druid.indexer.runner.javaOpts=-Xms2g -Xmx2g
+      volumeMounts:
+        - mountPath: /druid/data
+          name: data-volume
+      volumes:
+        - name: data-volume
+          persistentVolumeClaim:
+            claimName: middlemanager-data
+            
+    routers:
+      nodeType: router
+      druid.port: 8888
+      replicas: 2
+      resources:
+        requests:
+          memory: "1Gi"
+          cpu: "1"
+        limits:
+          memory: "1Gi"
+          cpu: "1"
+      runtime.properties: |
+        druid.router.http.numConnections=50
+        druid.router.http.numMaxThreads=100
+```
+
+```yaml persistent-volumes.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: historical-data
+  namespace: druid
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: fast-ssd
+  resources:
+    requests:
+      storage: 500Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: middlemanager-data
+  namespace: druid
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: fast-ssd
+  resources:
+    requests:
+      storage: 100Gi
+```
+</CodeGroup>
+
+## ZooKeeper-less Deployment
+
+Druid can run on Kubernetes without ZooKeeper by using the [druid-kubernetes-extensions](/development/extensions-core/kubernetes).
+
+### Enable Kubernetes Extensions
+
+<Steps>
+  <Step title="Load Extension">
+    ```properties
+    druid.extensions.loadList=["druid-kubernetes-extensions", ...]
+    ```
+  </Step>
+  
+  <Step title="Configure Discovery">
+    ```properties
+    # Use Kubernetes for service discovery
+    druid.serverview.type=http
+    druid.coordinator.loadqueuepeon.type=http
+    
+    # Kubernetes-specific settings
+    druid.discovery.type=k8s
+    druid.discovery.k8s.clusterIdentifier=druid-cluster
+    ```
+  </Step>
+  
+  <Step title="Leader Election">
+    ```properties
+    # Use Kubernetes for leader election (no ZooKeeper needed)
+    druid.leader.election.type=k8s
+    druid.leader.election.k8s.namespace=druid
+    druid.leader.election.k8s.lockResourceName=druid-leader-election
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+ZooKeeper-less mode requires Kubernetes 1.19+ and uses Kubernetes ConfigMaps for coordination.
+</Warning>
+
+## Service Exposure
+
+### Internal Services
+
+Create Kubernetes Services for inter-pod communication:
+
+```yaml services.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: druid-broker
+  namespace: druid
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8082
+      targetPort: 8082
+      name: broker
+  selector:
+    nodeType: broker
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: druid-router
+  namespace: druid
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 80
+      targetPort: 8888
+      name: router
+  selector:
+    nodeType: router
+```
+
+### External Access
+
+<Tabs>
+  <Tab title="LoadBalancer">
+    ```yaml
+    spec:
+      type: LoadBalancer
+      ports:
+        - port: 80
+          targetPort: 8888
+    ```
+    
+    Automatically provisions a cloud load balancer (AWS ELB, GCP LB, etc.)
+  </Tab>
+  
+  <Tab title="Ingress">
+    ```yaml
+    apiVersion: networking.k8s.io/v1
+    kind: Ingress
+    metadata:
+      name: druid-ingress
+      namespace: druid
+      annotations:
+        cert-manager.io/cluster-issuer: letsencrypt-prod
+    spec:
+      tls:
+        - hosts:
+            - druid.example.com
+          secretName: druid-tls
+      rules:
+        - host: druid.example.com
+          http:
+            paths:
+              - path: /
+                pathType: Prefix
+                backend:
+                  service:
+                    name: druid-router
+                    port:
+                      number: 8888
+    ```
+  </Tab>
+  
+  <Tab title="NodePort">
+    ```yaml
+    spec:
+      type: NodePort
+      ports:
+        - port: 8888
+          nodePort: 30888
+          targetPort: 8888
+    ```
+    
+    Access via `http://<node-ip>:30888`
+  </Tab>
+</Tabs>
+
+## Resource Management
+
+### Resource Requests and Limits
+
+<Info>
+Set appropriate requests and limits to ensure Kubernetes schedules pods efficiently and prevents resource contention.
+</Info>
+
+```yaml
+resources:
+  requests:
+    memory: "8Gi"    # Guaranteed memory
+    cpu: "4"         # Guaranteed CPU
+  limits:
+    memory: "8Gi"    # Maximum memory (should match requests for production)
+    cpu: "4"         # Maximum CPU
+```
+
+<Tip>
+For production, set memory limits equal to requests to avoid OOM kills and ensure consistent performance.
+</Tip>
+
+### Quality of Service Classes
+
+<Tabs>
+  <Tab title="Guaranteed (Recommended)">
+    ```yaml
+    resources:
+      requests:
+        memory: "8Gi"
+        cpu: "4"
+      limits:
+        memory: "8Gi"  # Same as request
+        cpu: "4"       # Same as request
+    ```
+    
+    Best for production workloads. Pods won't be evicted unless they exceed limits.
+  </Tab>
+  
+  <Tab title="Burstable">
+    ```yaml
+    resources:
+      requests:
+        memory: "4Gi"
+        cpu: "2"
+      limits:
+        memory: "8Gi"  # Higher than request
+        cpu: "4"       # Higher than request
+    ```
+    
+    Good for variable workloads. Can burst above requests.
+  </Tab>
+</Tabs>
+
+## Monitoring and Observability
+
+### Prometheus Integration
+
+<Steps>
+  <Step title="Enable Prometheus Emitter">
+    ```properties
+    druid.extensions.loadList=["prometheus-emitter", ...]
+    druid.emitter=prometheus
+    druid.emitter.prometheus.strategy=exporter
+    druid.emitter.prometheus.port=8000
+    ```
+  </Step>
+  
+  <Step title="Create ServiceMonitor">
+    ```yaml
+    apiVersion: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    metadata:
+      name: druid-metrics
+      namespace: druid
+    spec:
+      selector:
+        matchLabels:
+          app: druid
+      endpoints:
+        - port: metrics
+          interval: 30s
+    ```
+  </Step>
+</Steps>
+
+### Health Checks
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /status/health
+    port: 8082
+  initialDelaySeconds: 60
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+  
+readinessProbe:
+  httpGet:
+    path: /status/health
+    port: 8082
+  initialDelaySeconds: 30
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Use Init Containers for Dependencies" icon="hourglass-start">
+    Ensure dependencies (ZooKeeper, metadata store) are ready:
+    
+    ```yaml
+    initContainers:
+      - name: wait-for-postgres
+        image: busybox:1.35
+        command:
+          - sh
+          - -c
+          - |
+            until nc -z postgres.druid.svc.cluster.local 5432; do
+              echo "Waiting for PostgreSQL..."
+              sleep 2
+            done
+    ```
+  </Accordion>
+  
+  <Accordion title="Configure Pod Disruption Budgets" icon="shield">
+    Prevent too many pods from being disrupted simultaneously:
+    
+    ```yaml
+    apiVersion: policy/v1
+    kind: PodDisruptionBudget
+    metadata:
+      name: druid-broker-pdb
+    spec:
+      minAvailable: 2
+      selector:
+        matchLabels:
+          nodeType: broker
+    ```
+  </Accordion>
+  
+  <Accordion title="Use Anti-Affinity for HA" icon="maximize">
+    Spread replicas across different nodes:
+    
+    ```yaml
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+                - key: nodeType
+                  operator: In
+                  values:
+                    - broker
+            topologyKey: kubernetes.io/hostname
+    ```
+  </Accordion>
+  
+  <Accordion title="Configure Storage Classes" icon="hard-drive">
+    Use appropriate storage classes for different workloads:
+    
+    - **Historicals**: Fast SSD (e.g., `gp3` on AWS, `pd-ssd` on GCP)
+    - **MiddleManagers**: Fast SSD
+    - **Metadata**: Persistent SSD with backups
+  </Accordion>
+  
+  <Accordion title="Enable Auto-scaling" icon="chart-line">
+    Use Horizontal Pod Autoscaler for dynamic scaling:
+    
+    ```yaml
+    apiVersion: autoscaling/v2
+    kind: HorizontalPodAutoscaler
+    metadata:
+      name: druid-broker-hpa
+    spec:
+      scaleTargetRef:
+        apiVersion: apps/v1
+        kind: Deployment
+        name: druid-broker
+      minReplicas: 2
+      maxReplicas: 10
+      metrics:
+        - type: Resource
+          resource:
+            name: cpu
+            target:
+              type: Utilization
+              averageUtilization: 70
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+<CardGroup cols={2}>
+  <Card title="View Logs" icon="file-lines">
+    ```bash
+    kubectl logs -f <pod-name> -n druid
+    ```
+  </Card>
+  
+  <Card title="Describe Pod" icon="circle-info">
+    ```bash
+    kubectl describe pod <pod-name> -n druid
+    ```
+  </Card>
+  
+  <Card title="Shell into Pod" icon="terminal">
+    ```bash
+    kubectl exec -it <pod-name> -n druid -- /bin/bash
+    ```
+  </Card>
+  
+  <Card title="Check Events" icon="bell">
+    ```bash
+    kubectl get events -n druid --sort-by='.lastTimestamp'
+    ```
+  </Card>
+</CardGroup>
+
+## Additional Resources
+
+<CardGroup cols={2}>
+  <Card title="Druid Operator" icon="github" href="https://github.com/datainfrahq/druid-operator">
+    Official Kubernetes operator repository
+  </Card>
+  <Card title="Docker Hub" icon="docker" href="https://hub.docker.com/r/apache/druid">
+    Official Druid Docker images
+  </Card>
+  <Card title="Kubernetes Extensions" icon="puzzle-piece" href="/development/extensions-core/kubernetes">
+    ZooKeeper-less deployment guide
+  </Card>
+  <Card title="Helm Charts" icon="helm" href="https://github.com/apache/druid/tree/master/helm/druid">
+    Community Helm charts
+  </Card>
+</CardGroup>

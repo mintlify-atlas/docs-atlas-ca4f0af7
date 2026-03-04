@@ -1,0 +1,251 @@
+---
+title: "Druid SQL API"
+description: "HTTP API for submitting SQL queries to Apache Druid"
+---
+
+<Note>
+Apache Druid supports two query languages: Druid SQL and native queries. This document describes the SQL API.
+</Note>
+
+The Druid SQL API allows you to submit SQL queries to Druid using HTTP requests. The SQL query engine provides a familiar interface for users who know SQL.
+
+## Query from Historicals
+
+### Submit a query
+
+Submits a SQL query in JSON or text format. Returns query results with optional metadata.
+
+Each query has an associated SQL query ID. You can set this manually using the `sqlQueryId` context parameter, or Druid will generate one automatically and return it in the `X-Druid-SQL-Query-Id` response header.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/v2/sql" \
+--header 'Content-Type: application/json' \
+--data '{
+    "query": "SELECT * FROM wikipedia WHERE user='BlueMoon2662'",
+    "context" : {"sqlTimeZone" : "America/Los_Angeles"},
+    "header" : true,
+    "typesHeader" : true,
+    "sqlTypesHeader" : true
+}'
+```
+
+```http HTTP
+POST /druid/v2/sql HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+Content-Type: application/json
+
+{
+    "query": "SELECT * FROM wikipedia WHERE user='BlueMoon2662'",
+    "context" : {"sqlTimeZone" : "America/Los_Angeles"},
+    "header" : true,
+    "typesHeader" : true,
+    "sqlTypesHeader" : true
+}
+```
+</CodeGroup>
+
+<ParamField body="query" type="string" required>
+  SQL query string. You can include multiple SET statements to assign SQL query context parameters.
+</ParamField>
+
+<ParamField body="resultFormat" type="string" default="object">
+  Format for query results. Options:
+  - `object`: JSON array of objects
+  - `array`: JSON array of arrays  
+  - `objectLines`: Newline-delimited JSON objects
+  - `arrayLines`: Newline-delimited JSON arrays
+  - `csv`: Comma-separated values
+</ParamField>
+
+<ParamField body="header" type="boolean" default={false}>
+  When true, returns column names as the first row of results.
+</ParamField>
+
+<ParamField body="typesHeader" type="boolean" default={false}>
+  Adds Druid runtime type information in the header. Requires `header` to be true.
+</ParamField>
+
+<ParamField body="sqlTypesHeader" type="boolean" default={false}>
+  Adds SQL type information in the header. Requires `header` to be true.
+</ParamField>
+
+<ParamField body="context" type="object">
+  JSON object containing optional SQL query context parameters like query ID, time zone, and approximation settings.
+</ParamField>
+
+<ParamField body="parameters" type="array">
+  List of query parameters for parameterized queries. Each parameter should be a JSON object with SQL data type and value.
+</ParamField>
+
+<ResponseField name="results" type="array">
+  Query results in the format specified by `resultFormat`.
+</ResponseField>
+
+#### Text Format Requests
+
+You can also submit queries in plain text by setting `Content-Type` to `text/plain`:
+
+```bash
+echo 'SELECT 1' | curl -H 'Content-Type: text/plain' \
+  http://ROUTER_IP:ROUTER_PORT/druid/v2/sql --data @-
+```
+
+### Cancel a query
+
+Cancels a query with the specified `sqlQueryId`. Druid handles cancellation in a best-effort manner.
+
+<CodeGroup>
+```bash cURL
+curl --request DELETE \
+  "http://ROUTER_IP:ROUTER_PORT/druid/v2/sql/request01"
+```
+
+```http HTTP
+DELETE /druid/v2/sql/request01 HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="sqlQueryId" type="string" required>
+  The ID of the query to cancel.
+</ParamField>
+
+<ResponseExample>
+```json 202 Response
+{}
+```
+</ResponseExample>
+
+## Query from deep storage
+
+The `sql/statements` endpoint allows you to query segments that exist only in deep storage.
+
+### Submit a query
+
+Submit a query for data stored in deep storage. At least part of a datasource must be available on a Historical process for Druid to plan your query.
+
+<CodeGroup>
+```bash cURL  
+curl "http://ROUTER_IP:ROUTER_PORT/druid/v2/sql/statements" \
+--header 'Content-Type: application/json' \
+--data '{
+    "query": "SELECT * FROM wikipedia WHERE user='BlueMoon2662'",
+    "context": {
+        "executionMode":"ASYNC"
+    }
+}'
+```
+
+```http HTTP
+POST /druid/v2/sql/statements HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+Content-Type: application/json
+
+{
+    "query": "SELECT * FROM wikipedia WHERE user='BlueMoon2662'",
+    "context": {
+        "executionMode":"ASYNC"
+    }
+}
+```
+</CodeGroup>
+
+<ParamField body="context.executionMode" type="string" default="ASYNC">
+  Determines how query results are fetched. Currently only supports `ASYNC`.
+</ParamField>
+
+<ParamField body="context.selectDestination" type="string">
+  Where final results are written. Set to `durableStorage` for large result sets (>3000 rows).
+</ParamField>
+
+<ResponseField name="queryId" type="string">
+  Unique identifier for the submitted query.
+</ResponseField>
+
+<ResponseField name="state" type="string">
+  Initial state of the query (typically "ACCEPTED").
+</ResponseField>
+
+<ResponseField name="schema" type="array">
+  Array of column definitions with name, type, and nativeType.
+</ResponseField>
+
+### Get query status
+
+Retrieves the status of a query, including results information for completed queries.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/v2/sql/statements/query-9b93f6f7-ab0e-48f5-986a-3520f84f0804?detail=true"
+```
+
+```http HTTP
+GET /druid/v2/sql/statements/query-9b93f6f7-ab0e-48f5-986a-3520f84f0804?detail=true HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="queryId" type="string" required>
+  The query ID to check status for.
+</ParamField>
+
+<ParamField query="detail" type="boolean" default={false}>
+  Include detailed information about stages, counters, and warnings.
+</ParamField>
+
+<ResponseField name="state" type="string">
+  Current query state: ACCEPTED, RUNNING, SUCCESS, or FAILED.
+</ResponseField>
+
+<ResponseField name="result" type="object">
+  Summary of query results including row count, size, and sample records.
+</ResponseField>
+
+<ResponseField name="result.pages" type="array">
+  Information about each page of results including row count, size, and page ID.
+</ResponseField>
+
+### Get query results
+
+Retrieves results for completed queries. Results are separated into pages.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/v2/sql/statements/query-f3bca219-173d-44d4-bdc7-5002e910352f/results"
+```
+
+```http HTTP
+GET /druid/v2/sql/statements/query-f3bca219-173d-44d4-bdc7-5002e910352f/results HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="queryId" type="string" required>
+  The query ID to retrieve results for.
+</ParamField>
+
+<ParamField query="page" type="integer">
+  Specific page number to retrieve. If not specified, all results are returned.
+</ParamField>
+
+<ParamField query="resultFormat" type="string" default="object">
+  Format for results: `arrayLines`, `objectLines`, `array`, `object`, or `csv`.
+</ParamField>
+
+<ResponseExample>
+```json Success Response
+[
+    {
+        "__time": 1442018818771,
+        "channel": "#en.wikipedia",
+        "cityName": "",
+        "comment": "added project",
+        "user": "GELongstreet",
+        "delta": 36,
+        "added": 36,
+        "deleted": 0
+    }
+]
+```
+</ResponseExample>

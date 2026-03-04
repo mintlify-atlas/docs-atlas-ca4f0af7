@@ -1,0 +1,558 @@
+---
+title: Supervisor Management
+description: Manage and configure supervisors for streaming ingestion in Apache Druid
+---
+
+Apache Druid uses supervisors to manage streaming ingestion from external streaming sources. Supervisors oversee the state of indexing tasks to coordinate handoffs, manage failures, and ensure that scalability and replication requirements are maintained.
+
+<Info>
+This guide uses the Apache Kafka term "offset" to refer to the identifier for records in a partition. For Amazon Kinesis, the equivalent is "sequence number".
+</Info>
+
+## Supervisor Spec
+
+Druid uses a JSON specification (supervisor spec) to define tasks for streaming ingestion or auto-compaction. The supervisor spec specifies how Druid should consume, process, and index data from an external stream.
+
+### Top-Level Properties
+
+<ParamField path="id" type="string">
+  The supervisor id. This should be a unique ID. If unspecified, defaults to `spec.dataSchema.dataSource`.
+</ParamField>
+
+<ParamField path="type" type="string" required>
+  The supervisor type. For streaming ingestion: `kafka`, `kinesis`, or `rabbit`. For automatic compaction: `autocompact`.
+</ParamField>
+
+<ParamField path="spec" type="object" required>
+  The container object for the supervisor configuration.
+</ParamField>
+
+<ParamField path="spec.dataSchema" type="object" required>
+  The schema for the indexing task to use during ingestion. See [dataSchema](/ingestion/ingestion-spec#dataschema).
+</ParamField>
+
+<ParamField path="spec.ioConfig" type="object" required>
+  The I/O configuration object to define connection and I/O-related settings.
+</ParamField>
+
+<ParamField path="spec.tuningConfig" type="object">
+  The tuning configuration object to define performance-related settings.
+</ParamField>
+
+<ParamField path="context" type="object">
+  Extra configuration for both the supervisor and the tasks it spawns.
+</ParamField>
+
+<ParamField path="suspended" type="boolean">
+  Puts the supervisor in a suspended state.
+</ParamField>
+
+## I/O Configuration
+
+The following properties apply to both Kafka and Kinesis ingestion. For source-specific properties, see [Kafka I/O configuration](/ingestion/kafka#io-configuration) and [Kinesis I/O configuration](/ingestion/kinesis#io-configuration).
+
+<ParamField path="inputFormat" type="object" required>
+  The input format to define input data parsing. See [input formats](/ingestion/data-formats#input-format).
+</ParamField>
+
+<ParamField path="autoScalerConfig" type="object">
+  Defines auto scaling behavior for ingestion tasks. See [Task autoscaler](#task-autoscaler).
+</ParamField>
+
+<ParamField path="taskCount" type="integer" default={1}>
+  The maximum number of reading tasks in a replica set. Total tasks = `taskCount` × `replicas`.
+</ParamField>
+
+<ParamField path="replicas" type="integer" default={1}>
+  The number of replica sets. Druid assigns task replicas to different workers for resiliency.
+</ParamField>
+
+<ParamField path="taskDuration" type="ISO 8601 period" default="PT1H">
+  The length of time before tasks stop reading and begin publishing segments.
+</ParamField>
+
+<ParamField path="startDelay" type="ISO 8601 period" default="PT5S">
+  The period to wait before the supervisor starts managing tasks.
+</ParamField>
+
+<ParamField path="period" type="ISO 8601 period" default="PT30S">
+  How often the supervisor executes its management logic. Specifies the maximum time between iterations.
+</ParamField>
+
+<ParamField path="completionTimeout" type="ISO 8601 period" default="PT30M">
+  How long to wait before declaring a publishing task as failed and terminating it.
+</ParamField>
+
+<ParamField path="lateMessageRejectionStartDateTime" type="ISO 8601 datetime">
+  Reject messages with timestamps earlier than this datetime. Helps prevent concurrency issues with late messages.
+</ParamField>
+
+<ParamField path="lateMessageRejectionPeriod" type="ISO 8601 period">
+  Reject messages with timestamps earlier than this period before the task was created.
+</ParamField>
+
+<ParamField path="earlyMessageRejectionPeriod" type="ISO 8601 period">
+  Reject messages with timestamps later than this period after the task reached its duration.
+</ParamField>
+
+<ParamField path="stopTaskCount" type="integer" default="taskCount value">
+  Limits the number of ingestion tasks that can cycle at any given time. See [stopTaskCount](#stoptaskcount).
+</ParamField>
+
+<ParamField path="serverPriorityToReplicas" type="object">
+  Map of server priorities to the number of replicas per priority. Enables query isolation for mixed workloads.
+  
+  Example: `{"1": 2, "0": 1}` creates 2 replicas with priority 1 and 1 replica with priority 0.
+</ParamField>
+
+### Task Autoscaler
+
+Optionally configure autoscaling behavior for ingestion tasks using `autoScalerConfig`.
+
+<ParamField path="enableTaskAutoScaler" type="boolean" default={false}>
+  Enables the autoscaler. If not specified, autoscaler is disabled even when `autoScalerConfig` is set.
+</ParamField>
+
+<ParamField path="taskCountMax" type="integer" required>
+  Maximum number of ingestion tasks. Must be ≥ `taskCountMin`.
+</ParamField>
+
+<ParamField path="taskCountMin" type="integer" required>
+  Minimum number of ingestion tasks. Overrides `taskCount` when autoscaler is enabled.
+</ParamField>
+
+<ParamField path="taskCountStart" type="integer" default="taskCountMin">
+  Optional number of ingestion tasks to start with.
+</ParamField>
+
+<ParamField path="minTriggerScaleActionFrequencyMillis" type="long" default={600000}>
+  Minimum time interval between two scale actions.
+</ParamField>
+
+<ParamField path="autoScalerStrategy" type="string" default="lagBased">
+  The algorithm of autoscaler. Druid only supports `lagBased` and `costBased` (experimental).
+</ParamField>
+
+<ParamField path="stopTaskCountRatio" type="double">
+  Variable version of `ioConfig.stopTaskCount` with range (0.0, 1.0]. Makes max stoppable tasks proportional to running tasks.
+</ParamField>
+
+#### Lag-Based Autoscaler Strategy
+
+<Note>
+For Kinesis, lag metrics are reported as time difference in milliseconds rather than message count.
+</Note>
+
+<ParamField path="lagCollectionIntervalMillis" type="long" default={30000}>
+  Time period during which Druid collects lag metric points.
+</ParamField>
+
+<ParamField path="lagCollectionRangeMillis" type="long" default={600000}>
+  Total time window of lag collection.
+</ParamField>
+
+<ParamField path="scaleOutThreshold" type="long" default={6000000}>
+  Threshold for scale out action.
+</ParamField>
+
+<ParamField path="triggerScaleOutFractionThreshold" type="double" default={0.3}>
+  Enable scale out if this fraction of lag points is higher than `scaleOutThreshold`.
+</ParamField>
+
+<ParamField path="scaleInThreshold" type="long" default={1000000}>
+  Threshold for scale in action.
+</ParamField>
+
+<ParamField path="triggerScaleInFractionThreshold" type="double" default={0.9}>
+  Enable scale in if this fraction of lag points is lower than `scaleOutThreshold`.
+</ParamField>
+
+<ParamField path="scaleActionStartDelayMillis" type="long" default={300000}>
+  Delay after supervisor starts before the first scale logic check.
+</ParamField>
+
+<ParamField path="scaleActionPeriodMillis" type="long" default={60000}>
+  Frequency to check if a scale action is triggered.
+</ParamField>
+
+<ParamField path="scaleInStep" type="integer" default={1}>
+  Number of tasks to reduce when scaling down.
+</ParamField>
+
+<ParamField path="scaleOutStep" type="integer" default={2}>
+  Number of tasks to add when scaling out.
+</ParamField>
+
+<ParamField path="lagAggregate" type="string" default="SUM">
+  Aggregate function for lag metric. Options: `MAX`, `SUM`, `AVERAGE`.
+</ParamField>
+
+<CodeGroup>
+
+```json Lag-Based Autoscaler Example
+{
+  "type": "kinesis",
+  "spec": {
+    "dataSchema": { /* ... */ },
+    "ioConfig": {
+      "stream": "metrics",
+      "autoScalerConfig": {
+        "enableTaskAutoScaler": true,
+        "taskCountMax": 6,
+        "taskCountMin": 2,
+        "minTriggerScaleActionFrequencyMillis": 600000,
+        "autoScalerStrategy": "lagBased",
+        "lagCollectionIntervalMillis": 30000,
+        "lagCollectionRangeMillis": 600000,
+        "scaleOutThreshold": 600000,
+        "triggerScaleOutFractionThreshold": 0.3,
+        "scaleInThreshold": 100000,
+        "triggerScaleInFractionThreshold": 0.9,
+        "scaleActionStartDelayMillis": 300000,
+        "scaleActionPeriodMillis": 60000,
+        "scaleInStep": 1,
+        "scaleOutStep": 2
+      },
+      "inputFormat": { "type": "json" },
+      "taskCount": 1,
+      "replicas": 1,
+      "taskDuration": "PT1H"
+    },
+    "tuningConfig": { "type": "kinesis" }
+  }
+}
+```
+
+</CodeGroup>
+
+#### Cost-Based Autoscaler Strategy
+
+<Warning>
+This autoscaler is experimental. Implementation details and cost function parameters are subject to change. Kinesis is not yet supported.
+</Warning>
+
+Computes required task count via cost function based on ingestion lag and poll-to-idle ratio. Task counts are selected from a bounded range derived from the current partitions-per-task ratio.
+
+<ParamField path="scaleActionPeriodMillis" type="long" default={600000}>
+  Frequency to check if a scale action is triggered.
+</ParamField>
+
+<ParamField path="lagWeight" type="double" default={0.25}>
+  Weight of extracted lag value in cost function.
+</ParamField>
+
+<ParamField path="idleWeight" type="double" default={0.75}>
+  Weight of extracted poll idle value in cost function.
+</ParamField>
+
+<ParamField path="useTaskCountBoundaries" type="boolean" default={false}>
+  Enables bounded partitions-per-task window when selecting task counts.
+</ParamField>
+
+<ParamField path="highLagThreshold" type="long" default={-1}>
+  Per-partition lag threshold for burst scale-up. Set to > 0 to enable, < 0 to disable.
+</ParamField>
+
+<ParamField path="minScaleDownDelay" type="ISO 8601 duration" default="PT30M">
+  Minimum duration between successful scale actions.
+</ParamField>
+
+<ParamField path="scaleDownDuringTaskRolloverOnly" type="boolean" default={false}>
+  Limits task scaling down to periods during task rollovers only.
+</ParamField>
+
+### stopTaskCount
+
+Before setting `stopTaskCount`, note:
+
+<Warning>
+- Operations requiring all tasks to cycle (spec changes, partition changes) can cause lag without sufficient capacity
+- Task autoscaler ignores `stopTaskCount` when shutting down tasks for task count changes
+- If set below `taskCount`, Druid cycles longest running tasks first
+</Warning>
+
+## Tuning Configuration
+
+The following properties apply to both Kafka and Kinesis. For source-specific properties, see [Kafka tuning configuration](/ingestion/kafka#tuning-configuration) and [Kinesis tuning configuration](/ingestion/kinesis#tuning-configuration).
+
+<ParamField path="type" type="string" required>
+  The tuning type code: `kafka` or `kinesis`.
+</ParamField>
+
+<ParamField path="maxRowsInMemory" type="integer" default={150000}>
+  Number of rows to accumulate before persisting. Represents post-aggregation rows.
+</ParamField>
+
+<ParamField path="maxBytesInMemory" type="long" default="1/6 of max JVM memory">
+  Number of bytes to accumulate in heap memory before persisting. Max heap usage = `maxBytesInMemory * (2 + maxPendingPersists)`.
+</ParamField>
+
+<ParamField path="skipBytesInMemoryOverheadCheck" type="boolean" default={false}>
+  Exclude overhead object bytes from the `maxBytesInMemory` check.
+</ParamField>
+
+<ParamField path="maxRowsPerSegment" type="integer" default={5000000}>
+  Number of rows to store in a segment (post-aggregation). Handoff occurs when limits are reached.
+</ParamField>
+
+<ParamField path="maxTotalRows" type="long" default={20000000}>
+  Number of rows to aggregate across all segments (post-aggregation).
+</ParamField>
+
+<ParamField path="intermediateHandoffPeriod" type="ISO 8601 period" default="P2147483647D">
+  Period that determines how often tasks hand off segments.
+</ParamField>
+
+<ParamField path="intermediatePersistPeriod" type="ISO 8601 period" default="PT10M">
+  Period that determines the rate at which intermediate persists occur.
+</ParamField>
+
+<ParamField path="maxPendingPersists" type="integer" default={0}>
+  Maximum number of persists that can be pending but not started. Value of 0 means one persist can run concurrently with ingestion.
+</ParamField>
+
+<ParamField path="indexSpec" type="object">
+  Segment storage format options to use at indexing time. See [IndexSpec](/ingestion/ingestion-spec#indexspec).
+</ParamField>
+
+<ParamField path="resetOffsetAutomatically" type="boolean" default={false}>
+  Reset partitions when offset is unavailable. If `false`, surfaces exception causing tasks to fail.
+</ParamField>
+
+<ParamField path="workerThreads" type="integer" default="min(10, taskCount)">
+  Number of threads the supervisor uses to handle requests/responses for worker tasks.
+</ParamField>
+
+<ParamField path="chatRetries" type="integer" default={8}>
+  Number of HTTP request retries to indexing tasks before considering tasks unresponsive.
+</ParamField>
+
+<ParamField path="httpTimeout" type="ISO 8601 period" default="PT10S">
+  Period of time to wait for HTTP response from an indexing task.
+</ParamField>
+
+<ParamField path="shutdownTimeout" type="ISO 8601 period" default="PT80S">
+  Period of time to wait for supervisor to attempt graceful shutdown before exiting.
+</ParamField>
+
+<ParamField path="offsetFetchPeriod" type="ISO 8601 period" default="PT30S">
+  How often supervisor queries streaming source and indexing tasks to fetch current offsets and calculate lag. Minimum value: `PT5S`.
+</ParamField>
+
+## Start a Supervisor
+
+Start a new supervisor by submitting a supervisor spec via:
+
+1. **Web console**: Use the [data loader](/operations/web-console#data-loader)
+2. **API**: POST to the [Supervisor API](/api-reference/supervisor-api)
+
+The supervisor persists in the configured metadata database. Only one supervisor per datasource is allowed. Submitting a second spec overwrites the previous one.
+
+### Schema and Configuration Changes
+
+To make schema or configuration changes:
+
+1. Submit a new supervisor spec
+2. Overlord initiates graceful shutdown of existing supervisor
+3. Running supervisor signals tasks to stop reading and begin publishing
+4. New supervisor is created with updated configuration
+5. Updated schema is applied while retaining existing publishing tasks
+6. New tasks start at previous task offsets
+
+<Tip>
+Configuration changes can be applied without pausing ingestion.
+</Tip>
+
+## Status Report
+
+The supervisor status report contains the state of supervisor tasks and an array of recent exceptions.
+
+View status in the web console:
+
+1. Navigate to **Supervisors** view
+2. Click the supervisor ID
+3. Click **Status** in the left navigation
+
+### State Properties
+
+- **state**: Generic state applicable to any supervisor type
+- **detailedState**: Implementation-specific state with more insight
+
+Possible `state` values: `PENDING`, `RUNNING`, `SUSPENDED`, `STOPPING`, `UNHEALTHY_SUPERVISOR`, `UNHEALTHY_TASKS`
+
+### Detailed State Mapping
+
+| detailedState | state | Description |
+|---------------|-------|-------------|
+| `UNHEALTHY_SUPERVISOR` | `UNHEALTHY_SUPERVISOR` | Supervisor encountered errors on previous iterations |
+| `UNHEALTHY_TASKS` | `UNHEALTHY_TASKS` | Last tasks all failed |
+| `UNABLE_TO_CONNECT_TO_STREAM` | `UNHEALTHY_SUPERVISOR` | Connectivity issues, never connected |
+| `LOST_CONTACT_WITH_STREAM` | `UNHEALTHY_SUPERVISOR` | Connectivity issues, previously connected |
+| `PENDING` | `PENDING` | Initialized but not started |
+| `CONNECTING_TO_STREAM` | `RUNNING` | Trying to connect to stream |
+| `DISCOVERING_INITIAL_TASKS` | `RUNNING` | Discovering already-running tasks |
+| `CREATING_TASKS` | `RUNNING` | Creating tasks and discovering state |
+| `RUNNING` | `RUNNING` | Tasks started, waiting for duration |
+| `IDLE` | `IDLE` | No new data, existing data read |
+| `SUSPENDED` | `SUSPENDED` | Supervisor suspended |
+| `STOPPING` | `STOPPING` | Supervisor stopping |
+
+<CodeGroup>
+
+```json Status Report Example
+{
+  "dataSource": "social_media",
+  "stream": "social_media",
+  "partitions": 1,
+  "replicas": 1,
+  "durationSeconds": 3600,
+  "activeTasks": [
+    {
+      "id": "index_kafka_social_media_8ff3096f21fe448_jajnddno",
+      "startingOffsets": { "0": 0 },
+      "startTime": "2024-01-30T21:21:41.696Z",
+      "remainingSeconds": 479,
+      "type": "ACTIVE",
+      "currentOffsets": { "0": 50000 },
+      "lag": { "0": 0 }
+    }
+  ],
+  "publishingTasks": [],
+  "latestOffsets": { "0": 50000 },
+  "minimumLag": { "0": 0 },
+  "aggregateLag": 0,
+  "offsetsLastUpdated": "2024-01-30T22:13:19.335Z",
+  "suspended": false,
+  "healthy": true,
+  "state": "RUNNING",
+  "detailedState": "RUNNING",
+  "recentErrors": []
+}
+```
+
+</CodeGroup>
+
+<Note>
+For Kafka, consumer lag per partition may be reported as negative if the supervisor hasn't received the latest offset response. Aggregate lag is always ≥ 0.
+</Note>
+
+## SUPERVISORS System Table
+
+Query the `sys.supervisors` table to retrieve supervisor information:
+
+```sql
+SELECT * FROM sys.supervisors WHERE healthy=0;
+```
+
+See [SUPERVISORS table](/querying/sql-metadata-tables#supervisors-table) for more information.
+
+## Manage a Supervisor
+
+Manage supervisors via the web console or [Supervisor API](/api-reference/supervisor-api).
+
+In the web console:
+
+1. Navigate to **Supervisors** view
+2. Click the ellipsis in the **Actions** column
+3. Select the desired action
+
+### Suspend
+
+Pauses a running supervisor. The suspended supervisor continues to emit logs and metrics. Indexing tasks remain suspended until you resume.
+
+API: [Suspend a running supervisor](/api-reference/supervisor-api#suspend-a-running-supervisor)
+
+### Set Offsets
+
+<Warning>
+Perform with caution as it may result in skipped messages and data loss or duplication.
+</Warning>
+
+Resets offsets for supervisor partitions. This:
+
+1. Clears stored offsets
+2. Instructs supervisor to resume from specified offsets
+3. Terminates and recreates active tasks for specified partitions
+4. Saves specified offsets in metadata store if none exist
+
+API: [Reset offsets for a supervisor](/api-reference/supervisor-api#reset-offsets-for-a-supervisor)
+
+### Hard Reset
+
+<Warning>
+Perform with caution as it may result in skipped messages and data loss or duplication.
+</Warning>
+
+Clears supervisor metadata, causing data reading to resume from earliest or latest position based on `useEarliestOffset`. Terminates and recreates active tasks.
+
+Use to recover from a stopped state due to missing offsets.
+
+API: [Reset a supervisor](/api-reference/supervisor-api#reset-a-supervisor)
+
+### Terminate
+
+Stops a supervisor and its indexing tasks, triggering segment publishing. Places a tombstone marker in the metadata store to prevent reloading on restart.
+
+The terminated supervisor still exists in metadata store and its history can be retrieved.
+
+API: [Terminate a supervisor](/api-reference/supervisor-api#terminate-a-supervisor)
+
+## Capacity Planning
+
+Indexing tasks run on Middle Managers and are limited by available resources. Ensure sufficient worker capacity configured via `druid.worker.capacity`.
+
+<Note>
+Worker capacity is shared across all indexing task types: batch processing, streaming tasks, and merging tasks.
+</Note>
+
+A running task can be in one of two states:
+
+- **Reading**: For the period defined in `taskDuration`
+- **Publishing**: Until segments are generated, pushed to deep storage, and loaded by Historical services, or until `completionTimeout` elapses
+
+### Minimum Capacity Formula
+
+Number of reading tasks = `replicas * taskCount` (exception: if `taskCount` exceeds number of shards/partitions, Druid uses the number of shards/partitions)
+
+For reading and publishing tasks to run concurrently:
+
+```
+workerCapacity = 2 * replicas * taskCount
+```
+
+This is for the ideal case with one set publishing while another reads.
+
+<Warning>
+If time-to-publish > `taskDuration`, multiple sets may publish simultaneously, requiring additional capacity.
+</Warning>
+
+<Tip>
+Set `taskDuration` large enough that the previous set finishes publishing before the current set begins.
+</Tip>
+
+## Multi-Supervisor Support
+
+Druid supports multiple stream supervisors ingesting into the same datasource simultaneously. You can have any number of stream supervisors (Kafka, Kinesis, etc.) ingesting into the same datasource.
+
+<Warning>
+To ensure proper synchronization with multiple supervisors, set `useConcurrentLocks=true` in the `context` field of the supervisor spec.
+</Warning>
+
+See [Concurrent append and replace](/ingestion/concurrent-append-replace) for more information.
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Supervisor API" icon="code" href="/api-reference/supervisor-api">
+    Manage and monitor supervisors via API
+  </Card>
+  <Card title="Kafka Ingestion" icon="file-import" href="/ingestion/kafka">
+    Apache Kafka streaming ingestion
+  </Card>
+  <Card title="Kinesis Ingestion" icon="aws" href="/ingestion/kinesis">
+    Amazon Kinesis streaming ingestion
+  </Card>
+  <Card title="Automatic Compaction" icon="layer-group" href="/data-management/automatic-compaction">
+    Automatic compaction with supervisors
+  </Card>
+</CardGroup>

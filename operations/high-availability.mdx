@@ -1,0 +1,222 @@
+---
+title: "High Availability"
+description: "Configure Apache Druid for high availability with ZooKeeper, metadata storage, and redundant services"
+---
+
+Apache Druid can be configured for high availability to ensure continuous operation and minimize downtime. High availability requires proper configuration of ZooKeeper, metadata storage, Coordinators, Overlords, and Brokers.
+
+## Core Components for High Availability
+
+<CardGroup cols={2}>
+  <Card title="ZooKeeper Cluster" icon="server">
+    3 or 5 node cluster for distributed coordination
+  </Card>
+  <Card title="Metadata Storage" icon="database">
+    MySQL or PostgreSQL with replication and failover
+  </Card>
+  <Card title="Coordinator/Overlord" icon="circle-nodes">
+    Multiple servers with automatic failover
+  </Card>
+  <Card title="Broker Load Balancing" icon="scale-balanced">
+    Multiple Brokers behind a load balancer
+  </Card>
+</CardGroup>
+
+## ZooKeeper Configuration
+
+For a highly-available ZooKeeper deployment, you need a cluster of 3 or 5 ZooKeeper nodes.
+
+<Warning>
+Never run ZooKeeper with an even number of nodes, as this can lead to split-brain scenarios during network partitions.
+</Warning>
+
+### Deployment Options
+
+We recommend one of the following approaches:
+
+1. **Dedicated Hardware**: Install ZooKeeper on its own dedicated hardware for best performance and isolation
+2. **Co-located with Master Servers**: Run 3 or 5 Master servers (where Overlords or Coordinators are running) and configure ZooKeeper on them
+
+<Tip>
+For detailed ZooKeeper configuration and tuning, refer to the [ZooKeeper Admin Guide](https://zookeeper.apache.org/doc/current/zookeeperAdmin).
+</Tip>
+
+## Metadata Storage Configuration
+
+For highly-available metadata storage, use MySQL or PostgreSQL with replication and failover enabled.
+
+### Supported Databases
+
+<Tabs>
+  <Tab title="MySQL">
+    Configure MySQL with replication and automatic failover using MySQL Enterprise High Availability features.
+    
+    **Resources:**
+    - [MySQL Enterprise High Availability](https://www.mysql.com/products/enterprise/high_availability.html)
+  </Tab>
+  <Tab title="PostgreSQL">
+    Configure PostgreSQL with streaming replication and automatic failover using tools like Patroni or repmgr.
+    
+    **Resources:**
+    - [PostgreSQL High Availability, Load Balancing, and Replication](https://www.postgresql.org/docs/current/high-availability.html)
+  </Tab>
+</Tabs>
+
+<Note>
+Ensure your metadata store connection strings support failover mechanisms specific to your chosen database.
+</Note>
+
+## Coordinator and Overlord Failover
+
+Druid Coordinators and Overlords support automatic failover when multiple instances are running.
+
+### Configuration Requirements
+
+All Coordinator and Overlord instances must:
+- Use the same ZooKeeper cluster
+- Connect to the same metadata storage
+- Have identical configuration for service discovery
+
+### Failover Behavior
+
+<Steps>
+  <Step title="Leader Election">
+    Only one Coordinator and one Overlord will be active (leader) at a time, elected through ZooKeeper.
+  </Step>
+  <Step title="Automatic Failover">
+    If the active instance fails, another instance automatically takes over as leader.
+  </Step>
+  <Step title="Request Redirection">
+    Inactive instances automatically redirect HTTP requests to the current active instance.
+  </Step>
+</Steps>
+
+```properties
+# Example common.runtime.properties for Coordinators/Overlords
+druid.zk.service.host=zk1:2181,zk2:2181,zk3:2181
+druid.metadata.storage.type=postgresql
+druid.metadata.storage.connector.connectURI=jdbc:postgresql://db-host:5432/druid
+druid.metadata.storage.connector.user=druid
+druid.metadata.storage.connector.password=<password>
+```
+
+## Broker High Availability
+
+Brokers are stateless and all running instances are active, making them easy to scale horizontally.
+
+### Load Balancer Configuration
+
+Place all Broker instances behind a load balancer to distribute query traffic.
+
+<CodeGroup>
+```nginx nginx.conf
+upstream druid_brokers {
+    server broker1:8082;
+    server broker2:8082;
+    server broker3:8082;
+    
+    # Use least connections for query load balancing
+    least_conn;
+}
+
+server {
+    listen 80;
+    
+    location / {
+        proxy_pass http://druid_brokers;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+
+```yaml haproxy.cfg
+frontend druid_frontend
+    bind *:80
+    default_backend druid_brokers
+
+backend druid_brokers
+    balance leastconn
+    server broker1 broker1:8082 check
+    server broker2 broker2:8082 check
+    server broker3 broker3:8082 check
+```
+</CodeGroup>
+
+### Health Checks
+
+Configure your load balancer to perform health checks on the Broker status endpoint:
+
+```bash
+GET http://broker:8082/status/health
+```
+
+<Check>
+**Benefits of Multiple Brokers:**
+- Query load distribution
+- No single point of failure
+- Rolling upgrades without downtime
+- Horizontal scaling for query capacity
+</Check>
+
+## Historical and MiddleManager HA
+
+While not traditional "HA" components, Historicals and MiddleManagers contribute to cluster resilience:
+
+### Historical Redundancy
+
+- Configure replication rules to store segments on multiple Historicals
+- If one Historical fails, queries can still be served from replicas
+- The Coordinator automatically redistributes segments from failed nodes
+
+### MiddleManager/Indexer Resilience
+
+- Running multiple MiddleManagers provides task capacity redundancy
+- Failed tasks are automatically retried by the Overlord
+- Use multiple MiddleManagers to handle task load and provide fault tolerance
+
+## Verification and Testing
+
+<AccordionGroup>
+  <Accordion title="Test ZooKeeper Failover">
+    1. Stop one ZooKeeper node
+    2. Verify the cluster continues operating normally
+    3. Check ZooKeeper logs for leader re-election
+    4. Restart the stopped node and verify it rejoins the cluster
+  </Accordion>
+  
+  <Accordion title="Test Coordinator Failover">
+    1. Identify the current leader Coordinator
+    2. Stop the leader process
+    3. Verify another Coordinator becomes the leader within seconds
+    4. Check that HTTP requests to the old leader redirect to the new leader
+  </Accordion>
+  
+  <Accordion title="Test Broker Load Balancing">
+    1. Send queries through the load balancer
+    2. Verify queries distribute across all Brokers
+    3. Stop one Broker and verify queries continue
+    4. Restart the Broker and verify it receives traffic again
+  </Accordion>
+</AccordionGroup>
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Monitor Leader Elections" icon="chart-line">
+    Track ZooKeeper leader elections and Coordinator/Overlord failovers to detect issues
+  </Card>
+  <Card title="Use Odd Number of Nodes" icon="hashtag">
+    Always use 3 or 5 ZooKeeper nodes, never an even number
+  </Card>
+  <Card title="Test Failover Regularly" icon="vial">
+    Perform regular chaos testing to validate HA configuration
+  </Card>
+  <Card title="Monitor Metadata Store" icon="database">
+    Ensure metadata store replication lag is minimal
+  </Card>
+</CardGroup>
+
+<Tip>
+For production deployments, consider running Coordinators and Overlords on the same servers to reduce infrastructure costs while maintaining high availability.
+</Tip>

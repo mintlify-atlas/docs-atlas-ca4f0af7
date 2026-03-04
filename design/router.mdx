@@ -1,0 +1,338 @@
+---
+title: "Router Service"
+description: "Learn how the Router service distributes queries between Brokers, hosts the web console, and acts as a management proxy"
+---
+
+The **Router service** distributes queries between different Broker services. By default, the Broker routes queries based on preconfigured data retention rules. For example, if one month of recent data is loaded into a `hot` cluster, queries that fall within the recent month can be routed to a dedicated set of Brokers. Queries outside this range are routed to another set of Brokers. This set up provides **query isolation** such that queries for more important data are not impacted by queries for less important data.
+
+<Info>
+For query routing purposes, you should only ever need the Router service if you have a Druid cluster well into the **terabyte range**.
+</Info>
+
+In addition to query routing, the Router also runs the **web console**, a UI for loading data, managing datasources and tasks, and viewing server status and segment information.
+
+## Key Responsibilities
+
+<CardGroup cols={3}>
+  <Card title="Query Distribution" icon="route">
+    Routes queries to appropriate Broker services based on configured strategies and rules
+  </Card>
+  <Card title="Web Console" icon="browser">
+    Hosts the Druid web console UI for cluster management and monitoring
+  </Card>
+  <Card title="Management Proxy" icon="network-wired">
+    Optionally forwards requests to active Coordinator or Overlord services
+  </Card>
+  <Card title="Load Balancing" icon="scale-balanced">
+    Distributes Avatica JDBC requests across Brokers using consistent hashing
+  </Card>
+  <Card title="Tier Management" icon="layer-group">
+    Manages routing to different Broker tiers (hot, cold, etc.)
+  </Card>
+  <Card title="Query Isolation" icon="shield">
+    Isolates queries for different data priorities to prevent interference
+  </Card>
+</CardGroup>
+
+## Configuration
+
+For Apache Druid Router service configuration, see:
+- [Router Configuration](/configuration/router)
+- [Basic cluster tuning](/operations/basic-cluster-tuning#router)
+
+## Running the Router
+
+```bash
+org.apache.druid.cli.Main server router
+```
+
+## HTTP Endpoints
+
+For a list of API endpoints supported by the Router, see:
+- [Legacy metadata API reference](/api-reference/legacy-metadata-api#datasource-information)
+
+## Router as Management Proxy
+
+You can configure the Router to forward requests to the active Coordinator or Overlord service. This may be useful for setting up a highly available cluster in situations where the HTTP redirect mechanism of the inactive to active Coordinator or Overlord service does not function correctly, such as when servers are behind a load balancer or the hostname used in the redirect is only resolvable internally.
+
+### Enable the Management Proxy
+
+To enable the management proxy, set the following in the Router's `runtime.properties`:
+
+```properties
+druid.router.managementProxy.enabled=true
+```
+
+### Management Proxy Routing
+
+The management proxy supports **implicit** and **explicit** routes:
+
+<Tabs>
+  <Tab title="Implicit Routes">
+    Routes where the destination can be determined from the original request path based on Druid API path conventions.
+    
+    <Info>
+    These are convenient because they mean that using the management proxy does not require modifying the API request other than issuing the request to the Router instead of the Coordinator or Overlord.
+    </Info>
+    
+    **Conventions:**
+    - `/druid/coordinator/*` → Routes to Coordinator
+    - `/druid/indexer/*` → Routes to Overlord
+    
+    Most Druid API requests can be routed implicitly.
+  </Tab>
+  <Tab title="Explicit Routes">
+    Routes where the request to the Router contains a path prefix indicating which service the request should be routed to.
+    
+    <Warning>
+    This is required for API calls with an ambiguous destination. For example, the `/status` API is present on all Druid services, so explicit routing needs to be used to indicate the proxy destination.
+    </Warning>
+    
+    **Prefixes:**
+    - `/proxy/coordinator` → Routes to Coordinator
+    - `/proxy/overlord` → Routes to Overlord
+  </Tab>
+</Tabs>
+
+### Routing Examples
+
+| Request Route | Destination | Rewritten Route | Example |
+|--------------|-------------|-----------------|----------|
+| `/druid/coordinator/*` | Coordinator | `/druid/coordinator/*` | `router:8888/druid/coordinator/v1/datasources` → `coordinator:8081/druid/coordinator/v1/datasources` |
+| `/druid/indexer/*` | Overlord | `/druid/indexer/*` | `router:8888/druid/indexer/v1/task` → `overlord:8090/druid/indexer/v1/task` |
+| `/proxy/coordinator/*` | Coordinator | `/*` | `router:8888/proxy/coordinator/status` → `coordinator:8081/status` |
+| `/proxy/overlord/*` | Overlord | `/*` | `router:8888/proxy/overlord/druid/indexer/v1/isLeader` → `overlord:8090/druid/indexer/v1/isLeader` |
+
+## Router Strategies
+
+The Router has a configurable list of strategies to determine which Brokers to route queries to. **The order of the strategies is important** because the Broker is selected immediately after the strategy condition is satisfied.
+
+### timeBoundary Strategy
+
+```json
+{
+  "type": "timeBoundary"
+}
+```
+
+<Info>
+Including this strategy means all `timeBoundary` queries are always routed to the highest priority Broker.
+</Info>
+
+### priority Strategy
+
+```json
+{
+  "type": "priority",
+  "minPriority": 0,
+  "maxPriority": 1
+}
+```
+
+<ParamField path="minPriority" type="integer" default="0">
+  Queries with a priority less than this are routed to the lowest priority Broker
+</ParamField>
+
+<ParamField path="maxPriority" type="integer" default="1">
+  Queries with priority greater than this are routed to the highest priority Broker
+</ParamField>
+
+<Note>
+Using the default values, if a query with priority 0 (the default query priority) is sent, the query skips the priority selection logic.
+</Note>
+
+### manual Strategy
+
+This strategy reads the parameter `brokerService` from the query context and routes the query to that broker service. If no valid `brokerService` is specified in the query context, the field `defaultManualBrokerService` is used.
+
+```json
+{
+  "type": "manual",
+  "defaultManualBrokerService": "druid:broker-hot"
+}
+```
+
+<Info>
+This strategy can route both **native** and **SQL** queries. A value is considered valid if it is present in `druid.router.tierToBrokerMap`.
+</Info>
+
+### JavaScript Strategy
+
+Allows defining arbitrary routing rules using a JavaScript function. The function takes the configuration and the query to be executed, and returns the tier it should be routed to, or null for the default tier.
+
+```json
+{
+  "type": "javascript",
+  "function": "function (config, query) { if (query.getAggregatorSpecs && query.getAggregatorSpecs().size() >= 3) { var size = config.getTierToBrokerMap().values().size(); if (size > 0) { return config.getTierToBrokerMap().values().toArray()[size-1] } else { return config.getDefaultBrokerServiceName() } } else { return null } }"
+}
+```
+
+<Warning>
+JavaScript-based functionality is **disabled by default**. Please refer to the Druid [JavaScript programming guide](/development/javascript) for guidelines about using Druid's JavaScript functionality, including instructions on how to enable it.
+</Warning>
+
+The above example function sends queries containing more than three aggregators to the lowest priority Broker.
+
+## Routing of SQL Queries Using Strategies
+
+To enable routing of SQL queries using strategies, set:
+
+```properties
+druid.router.sql.enable=true
+```
+
+<Tabs>
+  <Tab title="SQL Routing Enabled">
+    The Broker service for a given SQL query is resolved using **only the provided Router strategies**. If not resolved using any of the strategies, the Router uses the `defaultBrokerServiceName`.
+  </Tab>
+  <Tab title="SQL Routing Disabled (Default)">
+    The Router uses the `defaultBrokerServiceName` for all SQL queries.
+  </Tab>
+</Tabs>
+
+<Note>
+**Important Distinctions:**
+
+- Setting `druid.router.sql.enable` does **not affect** Avatica JDBC requests
+- Setting `druid.router.sql.enable` does **not affect** native queries
+- Druid always routes native queries using the strategies and load rules as documented
+- Druid always routes Avatica JDBC requests based on connection ID
+</Note>
+
+## Avatica Query Balancing
+
+<Warning>
+All Avatica JDBC requests with a given connection ID **must be routed to the same Broker**, since Druid Brokers do not share connection state with each other.
+</Warning>
+
+Druid provides two built-in balancers that use hashing of a request's connection ID to assign requests to Brokers:
+
+<Tabs>
+  <Tab title="Rendezvous Hash Balancer (Default)">
+    This balancer uses [Rendezvous Hashing](https://en.wikipedia.org/wiki/Rendezvous_hashing) on an Avatica request's connection ID to assign the request to a Broker.
+    
+    ```properties
+    druid.router.avatica.balancer.type=rendezvousHash
+    ```
+    
+    <Info>
+    If no `druid.router.avatica.balancer` property is set, the Router defaults to using the rendezvous hash balancer.
+    </Info>
+  </Tab>
+  <Tab title="Consistent Hash Balancer">
+    This balancer uses [Consistent Hashing](https://en.wikipedia.org/wiki/Consistent_hashing) on an Avatica request's connection ID to assign the request to a Broker.
+    
+    ```properties
+    druid.router.avatica.balancer.type=consistentHash
+    ```
+    
+    <Warning>
+    This is a **non-default implementation** provided for experimentation purposes. The consistent hasher has:
+    - Longer setup times on initialization and when the set of Brokers changes
+    - Faster Broker assignment time than the rendezvous hasher (when tested with 5 Brokers)
+    - Requires locking (rendezvous hasher does not)
+    </Warning>
+  </Tab>
+</Tabs>
+
+<Note>
+**Important:** When multiple Routers are used, all Routers should have **identical balancer configuration** to ensure that they make the same routing decisions.
+</Note>
+
+## Example Production Configuration
+
+In this example, we have two tiers in our production cluster: `hot` and `_default_tier`. Queries for the `hot` tier are routed through the `broker-hot` set of Brokers, and queries for the `_default_tier` are routed through the `broker-cold` set of Brokers.
+
+### JVM Settings
+
+```bash
+-server
+-Xmx13g
+-Xms13g
+-XX:NewSize=256m
+-XX:MaxNewSize=256m
+-XX:+UseConcMarkSweepGC
+-XX:+PrintGCDetails
+-XX:+PrintGCTimeStamps
+-XX:+UseLargePages
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=/mnt/galaxy/deploy/current/
+-Duser.timezone=UTC
+-Dfile.encoding=UTF-8
+-Djava.io.tmpdir=/mnt/tmp
+-Dcom.sun.management.jmxremote.port=17071
+-Dcom.sun.management.jmxremote.authenticate=false
+-Dcom.sun.management.jmxremote.ssl=false
+```
+
+### Runtime Properties
+
+```properties
+druid.host=#{IP_ADDR}:8080
+druid.plaintextPort=8080
+druid.service=druid/router
+
+druid.router.defaultBrokerServiceName=druid:broker-cold
+druid.router.coordinatorServiceName=druid:coordinator
+druid.router.tierToBrokerMap={"hot":"druid:broker-hot","_default_tier":"druid:broker-cold"}
+druid.router.http.numConnections=50
+druid.router.http.readTimeout=PT5M
+
+# Number of threads used by the Router proxy http client
+druid.router.http.numMaxThreads=100
+
+druid.server.http.numThreads=100
+```
+
+<Info>
+This configuration runs on a c3.2xlarge EC2 instance with 13 GB allocated to the Router JVM.
+</Info>
+
+## Architecture Integration
+
+<CardGroup cols={2}>
+  <Card title="With Brokers" icon="route">
+    - Routes queries to appropriate Broker tiers
+    - Maintains connections to multiple Broker services
+    - Balances Avatica JDBC connections
+  </Card>
+  <Card title="With Coordinator" icon="server">
+    - Can proxy management requests to active Coordinator
+    - Routes based on `/druid/coordinator/*` path
+    - Handles implicit and explicit routing
+  </Card>
+  <Card title="With Overlord" icon="list-check">
+    - Can proxy management requests to active Overlord
+    - Routes based on `/druid/indexer/*` path
+    - Handles task submission and monitoring requests
+  </Card>
+  <Card title="With Clients" icon="users">
+    - Serves the web console UI
+    - Accepts query requests from clients
+    - Provides single entry point for Druid cluster
+  </Card>
+</CardGroup>
+
+## Performance Considerations
+
+<Tip>
+To optimize Router performance:
+
+1. **Size appropriately**: Routers are lightweight but need enough memory for connection pooling
+2. **Configure connection pools**: Set `druid.router.http.numConnections` based on Broker count and query load
+3. **Use strategies wisely**: Order strategies from most specific to least specific
+4. **Monitor routing decisions**: Track which queries go to which Broker tiers
+5. **Enable management proxy carefully**: Only if you need it for HA or load balancer compatibility
+</Tip>
+
+<Warning>
+**When to Skip the Router**
+
+You may not need a Router if:
+- Your cluster is small (under 1 TB)
+- You have a single Broker tier
+- You don't need query isolation
+- You access the web console directly from a Coordinator
+
+In these cases, clients can query Brokers directly.
+</Warning>

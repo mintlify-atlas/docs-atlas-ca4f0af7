@@ -1,0 +1,519 @@
+---
+title: "Web Console"
+description: "Use the Apache Druid web console for data loading, datasource management, query execution, and cluster monitoring"
+---
+
+The Druid web console provides a comprehensive UI for managing your cluster, loading data, executing queries, and monitoring system health.
+
+<Info>
+The web console is hosted by the [Router](/design/router) service and accessed at `http://<ROUTER_IP>:<ROUTER_PORT>`.
+</Info>
+
+## Prerequisites
+
+The web console requires the following configurations (enabled by default):
+
+<Steps>
+  <Step title="Router Management Proxy">
+    Enable the [Router's management proxy](/design/router#enable-the-management-proxy).
+  </Step>
+  <Step title="Druid SQL">
+    Enable [Druid SQL](/configuration#sql) for Broker processes.
+  </Step>
+</Steps>
+
+```properties
+# Typically already enabled in default configurations
+druid.router.managementProxy.enabled=true
+druid.sql.enable=true
+```
+
+<Warning>
+**Security Note:** Without proper [authentication and authorization](/operations/security-overview) configured, any user accessing the web console has the same privileges as the OS user running Druid. Always configure security for production environments.
+</Warning>
+
+## Accessing the Web Console
+
+Navigate to the Router's address in your web browser:
+
+<CodeGroup>
+```bash HTTP
+http://<ROUTER_IP>:8888
+```
+
+```bash HTTPS (with TLS)
+https://<ROUTER_IP>:9088
+```
+</CodeGroup>
+
+<Tip>
+If you've enabled authentication, you'll be prompted to log in with your credentials.
+</Tip>
+
+## Home View
+
+The Home view provides a high-level overview of your cluster with clickable cards for quick navigation.
+
+<CardGroup cols={3}>
+  <Card title="Status" icon="circle-info">
+    Druid version and loaded extensions
+  </Card>
+  <Card title="Datasources" icon="database">
+    All datasources and their sizes
+  </Card>
+  <Card title="Segments" icon="cubes">
+    Segment distribution and status
+  </Card>
+  <Card title="Supervisors" icon="eye">
+    Streaming ingestion supervisors
+  </Card>
+  <Card title="Tasks" icon="list-check">
+    Ingestion and processing tasks
+  </Card>
+  <Card title="Services" icon="server">
+    Cluster nodes and their status
+  </Card>
+  <Card title="Lookups" icon="book">
+    Query-time lookup tables
+  </Card>
+</CardGroup>
+
+<Frame>
+  <img src="/assets/web-console-01-home-view.png" alt="Web console home view" />
+</Frame>
+
+## Query View
+
+The enhanced Query view supports multi-stage query execution with SQL-based ingestion.
+
+### Key Features
+
+<Tabs>
+  <Tab title="Multi-Tab Interface">
+    - Open multiple query tabs simultaneously
+    - Each tab maintains its own query context
+    - Click **+** to open a new tab
+    - Right-click tab names to rename, duplicate, or close
+  </Tab>
+  
+  <Tab title="Schema Browser">
+    - Browse available schemas and datasources
+    - View table columns and types
+    - Drag-and-drop tables into queries
+  </Tab>
+  
+  <Tab title="External Data">
+    Click **Connect external data** to:
+    - Sample external data sources
+    - Generate EXTERN function definitions
+    - Create initial queries for data exploration
+  </Tab>
+</Tabs>
+
+### Query Execution
+
+<Steps>
+  <Step title="Write Your Query">
+    ```sql
+    SELECT
+      __time,
+      COUNT(*) AS events
+    FROM wikipedia
+    WHERE __time >= CURRENT_TIMESTAMP - INTERVAL '1' HOUR
+    GROUP BY 1
+    ORDER BY 1 DESC
+    ```
+  </Step>
+  
+  <Step title="Select Engine">
+    Choose the query engine from the dropdown:
+    - **Auto** (recommended): Automatically selects appropriate engine
+    - **SQL Native**: Traditional Druid SQL
+    - **SQL MSQ Task**: Multi-stage query engine for ingestion and complex queries
+  </Step>
+  
+  <Step title="Run or Preview">
+    - **Run**: Execute the full query
+    - **Preview**: For INSERT/REPLACE queries, runs without inserting and with a LIMIT
+  </Step>
+</Steps>
+
+### Live Query Reports
+
+When using the MSQ engine, the console displays real-time query progress:
+
+<Accordion title="Progress Indicators">
+- **Overall Progress**: Main progress bar showing total completion
+- **Current Stage**: Progress of the currently executing stage
+- **Stage Details**: Expand each stage to see:
+  - Worker statistics
+  - Partition-level metrics
+  - Rows processed and output
+  - Memory usage
+</Accordion>
+
+<Frame>
+  <img src="/assets/multi-stage-query/ui-annotated.png" alt="Multi-stage query view" />
+</Frame>
+
+### Additional Query Tools
+
+Access advanced features from the **More (...)** menu:
+
+<CardGroup cols={2}>
+  <Card title="Explain SQL Query" icon="diagram-project">
+    View the logical plan with EXPLAIN PLAN FOR
+  </Card>
+  <Card title="Query History" icon="clock-rotate-left">
+    Access previously executed queries
+  </Card>
+  <Card title="Convert Ingestion Spec" icon="arrows-rotate">
+    Convert native batch specs to SQL
+  </Card>
+  <Card title="Attach from Task ID" icon="link">
+    Open existing query task in new tab
+  </Card>
+</CardGroup>
+
+## Data Loader
+
+The data loader provides a wizard-based approach to creating ingestion specs.
+
+### Supported Data Sources
+
+<Tabs>
+  <Tab title="Batch">
+    - **Local files**: Upload files directly
+    - **HTTP**: Ingest from HTTP(S) URLs
+    - **S3**: Amazon S3 buckets
+    - **Google Cloud Storage**: GCS buckets
+    - **Azure**: Azure Blob Storage
+  </Tab>
+  
+  <Tab title="Streaming">
+    - **Apache Kafka**: Kafka topics
+    - **Amazon Kinesis**: Kinesis streams
+  </Tab>
+</Tabs>
+
+<Frame>
+  <img src="/assets/web-console-02-data-loader-1.png" alt="Data loader source selection" />
+</Frame>
+
+### Data Loader Steps
+
+<Steps>
+  <Step title="Connect">
+    Select data source and provide connection details
+  </Step>
+  <Step title="Parse">
+    Configure data format and parser settings
+  </Step>
+  <Step title="Parse Time">
+    Define the primary timestamp column
+  </Step>
+  <Step title="Transform">
+    Apply filters and transformations
+  </Step>
+  <Step title="Filter">
+    Set up additional filtering rules
+  </Step>
+  <Step title="Configure Schema">
+    Define dimensions and metrics
+  </Step>
+  <Step title="Partition">
+    Configure segment partitioning
+  </Step>
+  <Step title="Tune">
+    Adjust performance parameters
+  </Step>
+  <Step title="Publish">
+    Review and submit the ingestion spec
+  </Step>
+</Steps>
+
+<Tip>
+The wizard generates incremental previews of your data at each step, helping you validate configuration before submission.
+</Tip>
+
+<Frame>
+  <img src="/assets/web-console-03-data-loader-2.png" alt="Data loader configuration" />
+</Frame>
+
+## Datasources View
+
+Manage all datasources in your cluster from a centralized view.
+
+### Features
+
+<CardGroup cols={2}>
+  <Card title="Datasource List" icon="table">
+    View all datasources with:
+    - Total size
+    - Segment count
+    - Availability percentage
+    - Row count estimates
+  </Card>
+  
+  <Card title="Segment Timeline" icon="chart-gantt">
+    Toggle **Show segment timeline** to visualize:
+    - Time-based segment distribution
+    - Segment gaps
+    - Replication status
+  </Card>
+  
+  <Card title="Retention Rules" icon="calendar">
+    Configure rules to control:
+    - Data retention periods
+    - Segment replication
+    - Historical tier assignments
+  </Card>
+  
+  <Card title="Compaction" icon="compress">
+    Enable and configure:
+    - Automatic compaction
+    - Compaction schedules
+    - Segment size optimization
+  </Card>
+</CardGroup>
+
+<Frame>
+  <img src="/assets/web-console-04-datasources.png" alt="Datasources view" />
+</Frame>
+
+### Actions
+
+Right-click any datasource to:
+
+- **Query**: Open in Query view
+- **Edit retention rules**: Modify load/drop rules
+- **Configure compaction**: Set up automatic compaction
+- **Drop datasource**: Permanently delete
+- **Mark as unused**: Soft delete (can be restored)
+
+<Warning>
+Dropping a datasource permanently deletes all segments and metadata. This action cannot be undone.
+</Warning>
+
+## Segments View
+
+View detailed information about all segments in the cluster.
+
+<Frame>
+  <img src="/assets/web-console-06-segments.png" alt="Segments view" />
+</Frame>
+
+### Segment Information
+
+<Tabs>
+  <Tab title="Columns">
+    - **Datasource**: Parent datasource
+    - **Start/End**: Time range covered
+    - **Version**: Segment version timestamp
+    - **Partition**: Partition number
+    - **Size**: Segment size in bytes
+    - **Num Rows**: Row count
+  </Tab>
+  
+  <Tab title="Filtering">
+    Use the filter bar to find segments by:
+    - Datasource name
+    - Time interval
+    - Version
+    - Server location
+  </Tab>
+  
+  <Tab title="Details">
+    Click any segment to view:
+    - Full segment ID
+    - Shard spec details
+    - Load spec
+    - Dimensions and metrics
+    - Binary version
+  </Tab>
+</Tabs>
+
+## Supervisors View
+
+Monitor and manage streaming ingestion supervisors.
+
+<Frame>
+  <img src="/assets/web-console-07-supervisors.png" alt="Supervisors view" />
+</Frame>
+
+### Supervisor Management
+
+<Steps>
+  <Step title="View Status">
+    Monitor supervisor health and task distribution
+  </Step>
+  
+  <Step title="Submit Supervisor">
+    Click **⋮** → **Submit JSON supervisor** to create new supervisors
+  </Step>
+  
+  <Step title="Control Supervisors">
+    Right-click supervisors to:
+    - **Suspend**: Pause ingestion temporarily
+    - **Resume**: Restart suspended supervisor
+    - **Reset**: Clear offsets and restart
+    - **Terminate**: Stop and remove supervisor
+  </Step>
+</Steps>
+
+### Detailed Reports
+
+Click the magnifying glass icon to view:
+
+- Task allocation
+- Lag metrics (Kafka/Kinesis)
+- Partition assignments
+- Recent errors
+
+<Frame>
+  <img src="/assets/web-console-08-supervisor-status.png" alt="Supervisor status details" />
+</Frame>
+
+## Tasks View
+
+Track all ingestion and processing tasks.
+
+<Frame>
+  <img src="/assets/web-console-0.7-tasks.png" alt="Tasks view" />
+</Frame>
+
+### Task Organization
+
+Group tasks by:
+- **Type**: Index, compact, kill, etc.
+- **Datasource**: Group by target datasource
+- **Status**: Running, pending, success, failed
+
+### Task Actions
+
+<CardGroup cols={2}>
+  <Card title="Submit Task" icon="plus">
+    Click **⋮** → **Submit JSON task** to manually submit task specs
+  </Card>
+  
+  <Card title="Task Details" icon="magnifying-glass">
+    Click the magnifying glass to view:
+    - Task payload
+    - Status details
+    - Logs
+    - Created/updated timestamps
+  </Card>
+</CardGroup>
+
+<Frame>
+  <img src="/assets/web-console-09-task-status.png" alt="Task status details" />
+</Frame>
+
+## Services View
+
+Monitor the health and status of all cluster nodes.
+
+<Frame>
+  <img src="/assets/web-console-10-servers.png" alt="Services view" />
+</Frame>
+
+### Node Information
+
+<Tabs>
+  <Tab title="By Type">
+    Group services by role:
+    - Coordinators
+    - Overlords
+    - Brokers
+    - Historicals
+    - MiddleManagers/Indexers
+    - Routers
+  </Tab>
+  
+  <Tab title="By Tier">
+    Group Historicals by tier:
+    - `_default_tier`
+    - Custom tiers for workload separation
+  </Tab>
+  
+  <Tab title="Metrics">
+    View for each service:
+    - Host and port
+    - Current status
+    - Resource usage
+    - Loaded segments (Historicals)
+  </Tab>
+</Tabs>
+
+### Health Monitoring
+
+<Check>
+**Healthy Service Indicators:**
+- Status shows as **green/active**
+- Current size matches max size (Historicals)
+- No error messages in details
+</Check>
+
+## Lookups View
+
+Manage query-time lookup tables for dimension value enrichment.
+
+<Frame>
+  <img src="/assets/web-console-13-lookups.png" alt="Lookups view" />
+</Frame>
+
+### Creating Lookups
+
+<Steps>
+  <Step title="Open Lookups">
+    Access from **Home** view or top navigation **⋮** menu
+  </Step>
+  
+  <Step title="Create Lookup">
+    Click **Add lookup** and configure:
+    - Name
+    - Version
+    - Type (map, JDBC, etc.)
+    - Lookup data
+  </Step>
+  
+  <Step title="Apply">
+    Lookups are loaded into Broker and Historical memory
+  </Step>
+</Steps>
+
+### Using Lookups in Queries
+
+```sql
+SELECT
+  LOOKUP(country_code, 'country_names') AS country,
+  COUNT(*) AS events
+FROM events
+GROUP BY 1
+```
+
+## Tips and Tricks
+
+<AccordionGroup>
+  <Accordion title="View Underlying SQL">
+    Most views are powered by Druid SQL. Click **⋮** → **View SQL query for table** to see and customize the underlying query.
+  </Accordion>
+  
+  <Accordion title="Keyboard Shortcuts">
+    In the Query view:
+    - `Ctrl/Cmd + Enter`: Run query
+    - `Ctrl/Cmd + K`: Open command palette
+    - `Ctrl/Cmd + /`: Toggle comments
+  </Accordion>
+  
+  <Accordion title="Export Results">
+    Query results can be exported as:
+    - CSV
+    - TSV
+    - JSON
+  </Accordion>
+  
+  <Accordion title="Dark Mode">
+    Toggle dark mode from the user menu in the top-right corner.
+  </Accordion>
+</AccordionGroup>

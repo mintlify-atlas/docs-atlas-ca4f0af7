@@ -1,0 +1,194 @@
+---
+title: Joins
+description: Learn about join operators and query-time lookups in Apache Druid
+---
+
+Apache Druid has two features for joining data:
+
+1. **Join operators** - Available using [join datasources](datasource#join) in native queries or the [JOIN operator](sql) in Druid SQL
+2. **Query-time lookups** - Simple key-to-value mappings preloaded on all servers, accessible with or without explicit joins
+
+Refer to:
+- [Join datasource documentation](datasource#join) for native query joins
+- [Multi-stage query join documentation](../multi-stage-query/reference#joins) for MSQ task joins
+- [Lookups documentation](lookups) for query-time lookup details
+
+## When to Use Joins
+
+For best performance, avoid joins at query time when possible by joining data before loading into Druid.
+
+However, joins are the best solution for certain use cases:
+
+### Star and Snowflake Schemas
+
+When you need to change dimension values after initial ingestion without reingesting:
+
+```sql
+SELECT 
+  countries.v AS country_name,
+  SUM(sales.revenue) AS total_revenue
+FROM sales
+INNER JOIN lookup.countries ON sales.country_code = countries.k
+GROUP BY countries.v
+```
+
+**Solution:** Use [lookups](lookups) for dimension tables. Lookups are:
+- Preloaded in memory on all servers
+- Fast to access
+- Can be updated without reingestion
+
+### Subquery Requirements
+
+When your workload requires:
+- Joins on subquery results
+- Filters applied to subqueries
+- Complex multi-step query logic
+
+```sql
+SELECT 
+  top_products.product_name,
+  sales.revenue
+FROM sales
+INNER JOIN (
+  SELECT product_id, product_name 
+  FROM products 
+  WHERE category = 'Electronics'
+  ORDER BY popularity DESC
+  LIMIT 10
+) top_products ON sales.product_id = top_products.product_id
+```
+
+## Join Types
+
+<Tabs>
+<TabItem value="sql" label="SQL Joins">
+
+```sql
+-- INNER JOIN
+SELECT t1.id, t2.name
+FROM table1 t1
+INNER JOIN table2 t2 ON t1.id = t2.id
+
+-- LEFT JOIN
+SELECT t1.id, t2.name
+FROM table1 t1
+LEFT JOIN table2 t2 ON t1.id = t2.id
+```
+
+</TabItem>
+<TabItem value="native" label="Native Joins">
+
+```json
+{
+  "queryType": "scan",
+  "dataSource": {
+    "type": "join",
+    "left": "table1",
+    "right": "table2",
+    "rightPrefix": "t2.",
+    "condition": "id == \"t2.id\"",
+    "joinType": "INNER"
+  },
+  "intervals": ["0000/3000"]
+}
+```
+
+</TabItem>
+</Tabs>
+
+## Join with Lookups
+
+Lookups are the most common and performant join use case:
+
+### Using JOIN
+
+```sql
+SELECT
+  store_to_country.v AS country,
+  SUM(sales.revenue) AS country_revenue
+FROM sales
+INNER JOIN lookup.store_to_country ON sales.store = store_to_country.k
+GROUP BY store_to_country.v
+```
+
+### Using LOOKUP Function (Recommended)
+
+The `LOOKUP` function is faster because it can defer evaluation until after aggregation:
+
+```sql
+SELECT
+  LOOKUP(store, 'store_to_country') AS country,
+  SUM(revenue) AS country_revenue
+FROM sales
+GROUP BY LOOKUP(store, 'store_to_country')
+```
+
+**Advantages:**
+- Automatic query rewrites (reverse lookups, pull-through GROUP BY)
+- Better performance in most cases
+- Simpler syntax
+
+See [Lookups documentation](lookups) for details on query rewrites.
+
+## Performance Considerations
+
+### Native Query Joins
+
+Druid uses broadcast hash-join algorithm:
+
+1. **Memory requirement:** All datasources except the leftmost "base" must fit in memory
+2. **Execution:** Right-side data is broadcast to all servers processing the left side
+3. **Condition:** Must be an equality (or expression that reduces to equality)
+
+### Performance Tips
+
+1. **Use LOOKUP function over JOIN for lookups**
+   ```sql
+   -- Faster
+   LOOKUP(column, 'lookup_name')
+   
+   -- Slower
+   JOIN lookup.lookup_name ON ...
+   ```
+
+2. **Match column types** in join conditions to avoid implicit subqueries:
+   ```sql
+   -- Good: types match
+   FROM druid.d 
+   JOIN lookup.l ON d.string_field = l.k
+   
+   -- Bad: requires conversion (lookup keys are always strings)
+   FROM druid.d 
+   JOIN lookup.l ON d.numeric_field = l.k
+   ```
+
+3. **Place filters carefully** - Druid doesn't push predicates past joins:
+   ```sql
+   -- Filter applied before join (efficient)
+   FROM (SELECT * FROM table1 WHERE active = true) t1
+   JOIN table2 t2 ON t1.id = t2.id
+   
+   -- Filter applied after join (less efficient)
+   FROM table1 t1
+   JOIN table2 t2 ON t1.id = t2.id
+   WHERE t1.active = true
+   ```
+
+4. **Avoid comma joins** - Use explicit JOIN syntax
+
+5. **Check EXPLAIN PLAN** to identify inefficient patterns:
+   - Look for subqueries under `left` or `right`
+   - Look for `condition: "1"` (cartesian product)
+
+## Join Limitations
+
+- **Join order** is not automatically optimized
+- **RIGHT OUTER and FULL OUTER** joins not fully implemented (results may be incorrect)
+- **Multi-value dimensions** cannot be used in join conditions
+- **Preloaded dimension tables** wider than lookups are not supported (use lookups instead)
+
+## Related Documentation
+
+- [Datasources](datasource) - All datasource types
+- [Lookups](lookups) - Query-time lookup configuration and usage
+- [SQL Query Translation](sql-translation) - How SQL joins are translated

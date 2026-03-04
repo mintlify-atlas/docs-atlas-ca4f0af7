@@ -1,0 +1,213 @@
+---
+title: "Storage Overview"
+description: "Understand how Druid stores data in datasources, segments, and deep storage with indexing and handoff mechanisms"
+---
+
+Druid stores data in **datasources**, which are similar to tables in a traditional RDBMS. Each datasource is partitioned by time and, optionally, further partitioned by other attributes. Each time range is called a chunk (for example, a single day, if your datasource is partitioned by day). Within a chunk, data is partitioned into one or more segments.
+
+## Understanding Segments
+
+Each segment is a single file, typically comprising up to a few million rows of data. Since segments are organized into time chunks, it's helpful to think of segments as living on a timeline.
+
+<Note>
+A datasource may have anywhere from just a few segments, up to hundreds of thousands and even millions of segments.
+</Note>
+
+## Segment Building Process
+
+Each segment is created by a Middle Manager as **mutable and uncommitted**. Data is queryable as soon as it is added to an uncommitted segment. The segment building process accelerates later queries by producing a data file that is compact and indexed:
+
+<Steps>
+  <Step title="Conversion to columnar format">
+    Data is restructured into a column-oriented format for efficient scanning
+  </Step>
+  <Step title="Indexing with bitmap indexes">
+    Bitmap indexes are created for fast filtering operations
+  </Step>
+  <Step title="Compression">
+    Multiple compression techniques are applied:
+    - Dictionary encoding with id storage minimization for String columns
+    - Bitmap compression for bitmap indexes
+    - Type-aware compression for all columns
+  </Step>
+</Steps>
+
+Periodically, segments are committed and published to **deep storage**, become immutable, and move from Middle Managers to the Historical services. An entry about the segment is also written to the **metadata store**. This entry is a self-describing bit of metadata about the segment, including things like the schema of the segment, its size, and its location on deep storage. These entries tell the Coordinator what data is available on the cluster.
+
+## Indexing and Handoff
+
+Indexing is the mechanism by which new segments are created, and **handoff** is the mechanism by which they are published and served by Historical services.
+
+### On the Indexing Side
+
+<Steps>
+  <Step title="Task starts and determines segment identifier">
+    An indexing task starts running and building a new segment. It must determine the identifier before it starts building:
+    - **Appending tasks** (Kafka task, index task in append mode): Call an "allocate" API on the Overlord
+    - **Overwriting tasks** (Hadoop task, index task not in append mode): Lock an interval and create a new version number
+  </Step>
+  <Step title="Real-time data becomes queryable">
+    If the indexing task is a realtime task (like a Kafka task), the segment is immediately queryable at this point. It's available, but unpublished.
+  </Step>
+  <Step title="Push to deep storage and publish">
+    When the indexing task has finished reading data for the segment, it pushes it to deep storage and then publishes it by writing a record into the metadata store.
+  </Step>
+  <Step title="Wait for handoff (realtime tasks only)">
+    If the indexing task is a realtime task, it waits for a Historical service to load the segment to ensure data is continuously available for queries. Non-realtime tasks exit immediately.
+  </Step>
+</Steps>
+
+### On the Coordinator / Historical Side
+
+<Steps>
+  <Step title="Coordinator polls metadata store">
+    The Coordinator polls the metadata store periodically (by default, every 1 minute) for newly published segments.
+  </Step>
+  <Step title="Choose Historical for loading">
+    When the Coordinator finds a segment that is published and used, but unavailable, it chooses a Historical service to load that segment and instructs that Historical to do so.
+  </Step>
+  <Step title="Historical loads segment">
+    The Historical loads the segment and begins serving it.
+  </Step>
+  <Step title="Handoff completes">
+    At this point, if the indexing task was waiting for handoff, it will exit.
+  </Step>
+</Steps>
+
+## Segment Identifiers
+
+Segments all have a four-part identifier with the following components:
+
+<ParamField path="Datasource name" type="string" required>
+  The name of the datasource
+</ParamField>
+
+<ParamField path="Time interval" type="string" required>
+  For the time chunk containing the segment; corresponds to the `segmentGranularity` specified at ingestion time
+</ParamField>
+
+<ParamField path="Version number" type="string" required>
+  Generally an ISO8601 timestamp corresponding to when the segment set was first started
+</ParamField>
+
+<ParamField path="Partition number" type="integer" required>
+  An integer, unique within a datasource+interval+version; may not necessarily be contiguous
+</ParamField>
+
+### Example Segment Identifiers
+
+For a segment in datasource `clarity-cloud0`, time chunk `2018-05-21T16:00:00.000Z/2018-05-21T17:00:00.000Z`, version `2018-05-21T15:56:09.909Z`, and partition number 1:
+
+```
+clarity-cloud0_2018-05-21T16:00:00.000Z_2018-05-21T17:00:00.000Z_2018-05-21T15:56:09.909Z_1
+```
+
+<Info>
+Segments with partition number 0 (the first partition in a chunk) omit the partition number from the identifier.
+</Info>
+
+```
+clarity-cloud0_2018-05-21T16:00:00.000Z_2018-05-21T17:00:00.000Z_2018-05-21T15:56:09.909Z
+```
+
+## Segment Versioning
+
+The version number provides a form of **multi-version concurrency control (MVCC)** to support batch-mode overwriting.
+
+<Tabs>
+  <Tab title="Append Only">
+    If all you ever do is append data, then there will be just a single version for each time chunk.
+  </Tab>
+  <Tab title="Overwriting">
+    When you overwrite data, Druid will seamlessly switch from querying the old version to instead query the new, updated versions. A new set of segments is created with the same datasource, same time interval, but a **higher version number**.
+  </Tab>
+</Tabs>
+
+The switch appears to happen **instantaneously** to a user, because Druid handles this by:
+
+1. First loading the new data (but not allowing it to be queried)
+2. As soon as the new data is all loaded, switching all new queries to use those new segments
+3. Then dropping the old segments a few minutes later
+
+## Segment Lifecycle
+
+Each segment has a lifecycle that involves three major areas:
+
+<CardGroup cols={3}>
+  <Card title="Metadata Store" icon="database">
+    Segment metadata (a small JSON payload) is stored once a segment is done being constructed. The act of inserting a record is called **publishing**. Records have a boolean flag named `used` that controls whether the segment is intended to be queryable.
+  </Card>
+  <Card title="Deep Storage" icon="box-archive">
+    Segment data files are pushed to deep storage once a segment is done being constructed. This happens immediately before publishing metadata to the metadata store.
+  </Card>
+  <Card title="Availability for Querying" icon="magnifying-glass">
+    Segments are available for querying on some Druid data server, like a realtime task, directly from deep storage, or a Historical service.
+  </Card>
+</CardGroup>
+
+### Segment State Flags
+
+You can inspect the state of currently active segments using the Druid SQL `sys.segments` table. It includes the following flags:
+
+- **`is_published`**: True if segment metadata has been published to the metadata store and `used` is true
+- **`is_available`**: True if the segment is currently available for querying, either on a realtime task or Historical service
+- **`is_realtime`**: True if the segment is only available on realtime tasks
+- **`is_overshadowed`**: True if the segment is published and is fully overshadowed by some other published segments
+
+## Availability and Consistency
+
+Druid has an architectural separation between ingestion and querying. When understanding Druid's availability and consistency properties, we must look at each function separately.
+
+### Ingestion Side: Transactional Guarantees
+
+Druid's primary ingestion methods are all pull-based and offer **transactional guarantees**. Ingestion using these methods will publish in an all-or-nothing manner:
+
+<AccordionGroup>
+  <Accordion title="Supervised Seekable-Stream Ingestion" icon="stream">
+    Methods like Kafka and Kinesis. Druid commits stream offsets to its metadata store alongside segment metadata, in the same transaction. This ensures **exactly-once publishing behavior**.
+    
+    <Note>
+    Ingestion of data that has not yet been published can be rolled back if ingestion tasks fail. Partially-ingested data is discarded, and Druid will resume ingestion from the last committed set of stream offsets.
+    </Note>
+  </Accordion>
+  <Accordion title="Hadoop-based Batch Ingestion" icon="server">
+    Each task publishes all segment metadata in a single transaction.
+  </Accordion>
+  <Accordion title="Native Batch Ingestion" icon="cube">
+    - **Parallel mode**: The supervisor task publishes all segment metadata in a single transaction after the subtasks are finished
+    - **Simple mode**: The single task publishes all segment metadata in a single transaction after it is complete
+  </Accordion>
+</AccordionGroup>
+
+### Idempotency Guarantee
+
+Some ingestion methods offer an **idempotency** guarantee. This means that repeated executions of the same ingestion will not cause duplicate data to be ingested:
+
+- ✅ Supervised seekable-stream ingestion (Kafka, Kinesis) - idempotent
+- ⚠️ Hadoop-based batch ingestion - idempotent unless input source is the same Druid datasource
+- ⚠️ Native batch ingestion - idempotent unless `appendToExisting` is true or input source is the same Druid datasource
+
+### Query Side: Atomic Replacement
+
+The Druid Broker is responsible for ensuring that a consistent set of segments is involved in a given query. It selects the appropriate set of segment versions to use when the query starts based on what is currently available.
+
+<Info>
+**Atomic replacement** ensures that from a user's perspective, queries flip instantaneously from an older version of data to a newer set of data, with no consistency or performance impact. This is used for Hadoop-based batch ingestion, native batch ingestion when `appendToExisting` is false, and compaction.
+</Info>
+
+<Warning>
+Atomic replacement happens for each time chunk individually. If a batch ingestion task or compaction involves multiple time chunks, then each time chunk will undergo atomic replacement soon after the task finishes, but the replacements will not all happen simultaneously.
+</Warning>
+
+Typically, atomic replacement in Druid is based on a core set concept that works in conjunction with segment versions:
+
+1. When a time chunk is overwritten, a new core set of segments is created with a higher version number
+2. The core set must all be available before the Broker will use them instead of the older set
+3. There can also only be one core set per version per time chunk
+4. Druid will also only use a single version at a time per time chunk
+
+Together, these properties provide Druid's atomic replacement guarantees.
+
+### Handling Unavailable Segments
+
+If segments become unavailable due to multiple Historicals going offline simultaneously (beyond your replication factor), then Druid queries will include only the segments that are still available. In the background, Druid will reload these unavailable segments on other Historicals as quickly as possible, at which point they will be included in queries again.

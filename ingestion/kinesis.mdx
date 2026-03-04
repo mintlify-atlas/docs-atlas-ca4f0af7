@@ -1,0 +1,369 @@
+---
+title: Amazon Kinesis Ingestion
+description: Configure Amazon Kinesis streaming ingestion with supervisors for Apache Druid
+---
+
+When you enable the Kinesis indexing service, you can configure supervisors on the Overlord to manage the creation and lifetime of Kinesis indexing tasks. Kinesis indexing tasks read events using the Kinesis shard and sequence number mechanism to guarantee exactly-once ingestion.
+
+## Setup
+
+To use the Kinesis indexing service, load the `druid-kinesis-indexing-service` core extension on both the Overlord and Middle Manager.
+
+See [Loading extensions](/configuration/extensions#loading-extensions) for more information.
+
+<Warning>
+Review [Known issues](#known-issues) before deploying to production.
+</Warning>
+
+## Supervisor Spec Configuration
+
+This section covers Kinesis-specific configuration properties. For properties shared across all streaming methods, see [Supervisor spec](/ingestion/supervisor#supervisor-spec).
+
+<CodeGroup>
+
+```json Kinesis Supervisor Spec
+{
+  "type": "kinesis",
+  "spec": {
+    "ioConfig": {
+      "type": "kinesis",
+      "stream": "KinesisStream",
+      "inputFormat": {
+        "type": "json"
+      },
+      "useEarliestSequenceNumber": true
+    },
+    "tuningConfig": {
+      "type": "kinesis"
+    },
+    "dataSchema": {
+      "dataSource": "KinesisStream",
+      "timestampSpec": {
+        "column": "timestamp",
+        "format": "iso"
+      },
+      "dimensionsSpec": {
+        "dimensions": [
+          "isRobot",
+          "channel",
+          "flags",
+          "isUnpatrolled",
+          "page",
+          "diffUrl",
+          { "type": "long", "name": "added" },
+          "comment",
+          { "type": "long", "name": "commentLength" },
+          "isNew",
+          "isMinor",
+          { "type": "long", "name": "delta" },
+          "isAnonymous",
+          "user",
+          { "type": "long", "name": "deltaBucket" },
+          { "type": "long", "name": "deleted" },
+          "namespace",
+          "cityName",
+          "countryName",
+          "regionIsoCode",
+          "metroCode",
+          "countryIsoCode",
+          "regionName"
+        ]
+      },
+      "granularitySpec": {
+        "queryGranularity": "none",
+        "rollup": false,
+        "segmentGranularity": "hour"
+      }
+    }
+  }
+}
+```
+
+</CodeGroup>
+
+## I/O Configuration
+
+Kinesis-specific `ioConfig` properties:
+
+<ParamField path="stream" type="string" required>
+  The Kinesis stream to read.
+</ParamField>
+
+<ParamField path="endpoint" type="string" default="kinesis.us-east-1.amazonaws.com">
+  The AWS Kinesis stream endpoint for a region. See [AWS service endpoints](http://docs.aws.amazon.com/general/latest/gr/rande.html#ak_region).
+</ParamField>
+
+<ParamField path="useEarliestSequenceNumber" type="boolean" default={false}>
+  If a supervisor manages a datasource for the first time, this determines whether to retrieve the earliest or latest sequence numbers in Kinesis.
+</ParamField>
+
+<ParamField path="fetchDelayMillis" type="integer" default={0}>
+  Time in milliseconds to wait between subsequent calls to fetch records from Kinesis. See [Determine fetch settings](#determine-fetch-settings).
+</ParamField>
+
+<ParamField path="awsAssumedRoleArn" type="string">
+  The AWS assumed role to use for additional permissions.
+</ParamField>
+
+<ParamField path="awsExternalId" type="string">
+  The AWS external ID to use for additional permissions.
+</ParamField>
+
+### Data Format
+
+The Kinesis indexing service supports both `inputFormat` and `parser` to specify the data format. Use `inputFormat` unless you need a format only supported by the legacy `parser`.
+
+Supported `inputFormat` values:
+
+- `kinesis`
+- `csv`
+- `tsv`
+- `json`
+- `avro_stream`
+- `protobuf`
+
+You can use `parser` to read `thrift` formats.
+
+## Tuning Configuration
+
+Kinesis-specific `tuningConfig` properties:
+
+<ParamField path="skipSequenceNumberAvailabilityCheck" type="boolean" default={false}>
+  Whether to check if the current sequence number is still available in a Kinesis shard. If `false`, the task attempts to reset based on `resetOffsetAutomatically`.
+</ParamField>
+
+<ParamField path="recordBufferSizeBytes" type="integer">
+  The size of the buffer (heap memory bytes) between Kinesis fetch threads and the main ingestion thread. See [Determine fetch settings](#determine-fetch-settings) for defaults.
+</ParamField>
+
+<ParamField path="recordBufferOfferTimeout" type="integer" default={5000}>
+  Milliseconds to wait for space in the buffer before timing out.
+</ParamField>
+
+<ParamField path="recordBufferFullWait" type="integer" default={5000}>
+  Milliseconds to wait for the buffer to drain before attempting to fetch records again.
+</ParamField>
+
+<ParamField path="fetchThreads" type="integer" default="procs * 2">
+  Size of the pool of threads fetching data from Kinesis. No benefit in having more threads than Kinesis shards.
+</ParamField>
+
+<ParamField path="maxBytesPerPoll" type="integer" default={1000000}>
+  Maximum bytes to fetch from buffer per poll. At least one record is polled regardless of this config.
+</ParamField>
+
+<ParamField path="repartitionTransitionDuration" type="ISO 8601 period" default="PT2M">
+  When shards split or merge, wait time for the stream to write records to new shards. Helps avoid issues with empty shard handling.
+</ParamField>
+
+<ParamField path="useListShards" type="boolean" default={false}>
+  If `true`, use `listShards` API to prevent `LimitExceededException`. Requires appropriate IAM permissions.
+</ParamField>
+
+## AWS Authentication
+
+Druid uses AWS access and secret keys to authenticate Kinesis API requests.
+
+### Option 1: Roles or Short-term Credentials (Recommended)
+
+Druid looks for credentials in this order:
+
+1. Environment variables
+2. Web Identity Token
+3. Default profile configuration file
+4. EC2 instance profile provider
+
+### Option 2: Long-term Security Credentials
+
+<Warning>
+AWS does not recommend providing long-term credentials in configuration files as it poses a security risk.
+</Warning>
+
+You can provide credentials in `common.runtime.properties`:
+
+```properties
+druid.kinesis.accessKey=AKIAWxxxxxxxxxx4NCKS
+druid.kinesis.secretKey=Jbytxxxxxxxxxxx2+555
+```
+
+### Required IAM Permissions
+
+Permissions depend on the `useListShards` flag.
+
+<Tabs>
+  <Tab title="useListShards = true">
+    Required permissions:
+    - `ListStreams` - List your data streams
+    - `Get*` - Required for `GetShardIterator`
+    - `GetRecords` - Get data records from shards
+    - `ListShards` - Get shards for a stream
+
+    ```json Example Policy
+    [
+      {
+        "Effect": "Allow",
+        "Action": ["kinesis:List*"],
+        "Resource": ["*"]
+      },
+      {
+        "Effect": "Allow",
+        "Action": ["kinesis:Get*"],
+        "Resource": ["<ARN for shards to be ingested>"]
+      }
+    ]
+    ```
+  </Tab>
+  
+  <Tab title="useListShards = false">
+    Required permissions:
+    - `ListStreams` - List your data streams
+    - `Get*` - Required for `GetShardIterator`
+    - `GetRecords` - Get data records from shards
+    - `DescribeStream` - Describe the data stream
+
+    ```json Example Policy
+    [
+      {
+        "Effect": "Allow",
+        "Action": ["kinesis:ListStreams"],
+        "Resource": ["*"]
+      },
+      {
+        "Effect": "Allow",
+        "Action": ["kinesis:DescribeStream"],
+        "Resource": ["*"]
+      },
+      {
+        "Effect": "Allow",
+        "Action": ["kinesis:Get*"],
+        "Resource": ["<ARN for shards to be ingested>"]
+      }
+    ]
+    ```
+  </Tab>
+</Tabs>
+
+## Shards and Segment Handoff
+
+Each Kinesis indexing task writes events from Kinesis shards into a single segment until reaching:
+
+- `maxRowsPerSegment`
+- `maxTotalRows`
+- `intermediateHandoffPeriod`
+
+At this point, the task creates a new shard for the segment granularity.
+
+### Incremental Hand-offs
+
+Tasks perform incremental hand-offs so segments are available as they're created. When limits are reached:
+
+1. Task hands off all segments
+2. Creates a new set of segments
+3. Continues ingestion
+
+This allows tasks to run for longer durations without accumulating old segments locally.
+
+### Small Segments
+
+Small segments may still be produced. For example:
+
+- Task duration: 4 hours
+- Segment granularity: HOUR
+- Supervisor started: 9:10
+
+At 13:10, new tasks start. Events for 13:00-14:00 may split across tasks, creating small segments.
+
+To merge small segments, schedule re-indexing tasks with a different segment granularity. See [Segment size optimization](/operations/segment-optimization).
+
+## Determine Fetch Settings
+
+Kinesis indexing tasks fetch records using `fetchThreads` threads. If `fetchThreads` exceeds the number of Kinesis shards, excess threads remain unused.
+
+Each fetch thread:
+- Fetches up to 10 MB of records at once
+- Has a delay of `fetchDelayMillis` between fetches
+- Pushes records into a shared queue of size `recordBufferSizeBytes`
+
+### Default Values
+
+- **fetchThreads**: `2 * processors available to task`
+  - Limited to prevent total fetched data from exceeding 5% of max heap
+  - Processors available = total processors / `druid.worker.capacity`
+- **fetchDelayMillis**: `0` (no delay)
+- **recordBufferSizeBytes**: Smaller of 100 MB or 10% of available heap
+- **maxBytesPerPoll**: `1000000`
+
+### Kinesis API Limits
+
+- Each data record: Up to 1 MB
+- Each shard: Up to 5 transactions per second for reads
+- Each shard: Up to 2 MB per second
+- GetRecords max return: 10 MB
+
+If limits are exceeded, Kinesis throws `ProvisionedThroughputExceededException`. Druid tasks pause for the larger of `fetchDelayMillis` or 3 seconds, then retry.
+
+<Tip>
+Default settings are sufficient for most use cases. Adjust only if you need finer control over fetch rate and memory usage based on:
+- Average record size
+- Number of consumers reading from the shard
+</Tip>
+
+## Deaggregation
+
+The Kinesis indexing service supports de-aggregation of multiple rows stored within a single [Kinesis Data Streams](https://docs.aws.amazon.com/streams/latest/dev/introduction.html) record for more efficient data transfer.
+
+## Resharding
+
+[Resharding](https://docs.aws.amazon.com/streams/latest/dev/kinesis-using-sdk-java-resharding.html) lets you adjust the number of shards in a stream to adapt to changes in data flow rate.
+
+During resharding:
+
+1. Early shutdown of ingestion tasks occurs
+2. Possible task failures may happen
+3. The supervisor updates shard-to-task-group mappings
+4. Tasks with closed shards are shut down
+5. Distribution of active shards is balanced across tasks
+
+The resharding window concludes when:
+
+- All closed shards are fully read and published
+- Tasks with inactive shard assignments are shut down
+
+<Note>
+When the supervisor detects new partitions while running, tasks read from the earliest sequence number regardless of `useEarliestSequence` setting.
+
+If resharding occurs while the supervisor is suspended and `useEarliestSequence` is `false`, resuming causes tasks to read new shards from the latest sequence.
+</Note>
+
+## Known Issues
+
+Before deploying to production:
+
+<Warning>
+**Read Throughput Limits**
+
+Kinesis imposes a read throughput limit per shard. With multiple supervisors reading from the same stream, add more shards to ensure sufficient read throughput.
+</Warning>
+
+<Warning>
+**High IteratorAgeMilliseconds**
+
+A Kinesis supervisor may compare checkpoint sequence numbers to the retention window. These checks fetch the earliest sequence number, which can cause `IteratorAgeMilliseconds` to become very high in AWS CloudWatch.
+</Warning>
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Supervisor API" icon="code" href="/api-reference/supervisor-api">
+    Manage and monitor supervisors via API
+  </Card>
+  <Card title="Supervisor Reference" icon="book" href="/ingestion/supervisor">
+    Supervisor status and capacity planning
+  </Card>
+  <Card title="Data Formats" icon="file-lines" href="/ingestion/data-formats">
+    Supported input formats
+  </Card>
+  <Card title="AWS IAM Guide" icon="aws" href="https://docs.aws.amazon.com/IAM/latest/UserGuide/">
+    AWS Identity and Access Management
+  </Card>
+</CardGroup>

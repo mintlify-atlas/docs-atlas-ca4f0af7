@@ -1,0 +1,690 @@
+---
+title: Schema Design Tips
+description: Best practices and tips for designing Apache Druid schemas for optimal performance
+---
+
+This guide provides tips for users coming from other systems and general best practices for schema design in Druid.
+
+## Druid's Data Model Overview
+
+<CardGroup cols={2}>
+  <Card title="Datasources" icon="database">
+    Similar to tables in a traditional RDBMS
+  </Card>
+  <Card title="Rollup" icon="compress">
+    Optional partial aggregation during ingestion
+  </Card>
+  <Card title="Time-based" icon="clock">
+    Every row must have a timestamp
+  </Card>
+  <Card title="OLAP" icon="cube">
+    Columns are either dimensions or metrics
+  </Card>
+</CardGroup>
+
+<Note>
+  For general information, see the [Schema Model](/ingestion/schema-model) documentation.
+</Note>
+
+## Coming from Other Systems
+
+### Relational Databases (RDBMS)
+
+<Accordion title="Key Differences" icon="database">
+  **Denormalization is Recommended**
+  
+  Unlike relational databases where normalization is best practice, Druid benefits from denormalized data.
+  
+  <Tabs>
+    <Tab title="Traditional RDBMS">
+      ```sql
+      -- Sales table
+      product_id | quantity | price
+      -----------|----------|------
+      123        | 5        | 99.99
+      
+      -- Products table (separate)
+      product_id | name      | category
+      -----------|-----------|----------
+      123        | Widget    | Electronics
+      ```
+      
+      Requires JOIN at query time
+    </Tab>
+    
+    <Tab title="Druid (Recommended)">
+      ```json
+      {
+        "product_id": 123,
+        "product_name": "Widget",
+        "product_category": "Electronics",
+        "quantity": 5,
+        "price": 99.99
+      }
+      ```
+      
+      All data in one table, no JOIN needed
+    </Tab>
+  </Tabs>
+</Accordion>
+
+<AccordionGroup>
+  <Accordion title="Why Denormalization Works" icon="lightbulb">
+    **Storage Efficiency**
+    
+    Druid uses dictionary encoding to store string columns efficiently. Each unique value is stored once, and rows contain integer references.
+    
+    **Query Performance**
+    
+    - No JOIN operations needed at query time
+    - Direct access to all data
+    - Operates on compressed dictionary-encoded data
+  </Accordion>
+  
+  <Accordion title="When to Use Lookups" icon="search">
+    Use [lookups](/querying/lookups) (similar to dimension tables) when:
+    
+    - You need to update dimension values frequently
+    - Changes should reflect immediately in already-ingested data
+    - Memory footprint is acceptable (full copy on each server)
+    
+    <Warning>
+      Lookups are not suitable for large tables. Use pre-join for large datasets.
+    </Warning>
+  </Accordion>
+</AccordionGroup>
+
+#### Tips for Relational Data
+
+<Steps>
+  <Step title="Remove Primary Keys">
+    Druid datasources do not have primary or unique key constraints
+  </Step>
+  
+  <Step title="Denormalize When Possible">
+    Flatten dimension tables into your main table before ingestion
+  </Step>
+  
+  <Step title="Pre-join Large Tables">
+    Join two large distributed tables before loading into Druid (Druid doesn't support query-time joins of large datasources)
+  </Step>
+  
+  <Step title="Consider Rollup">
+    Decide if you want perfect rollup (pre-aggregation) or load data as-is
+  </Step>
+</Steps>
+
+### Time Series Databases
+
+<Accordion title="Key Differences" icon="chart-line">
+  **Data Point vs Series Model**
+  
+  Druid treats each point separately rather than as part of a "time series".
+</Accordion>
+
+#### Tips for Time Series Data
+
+<AccordionGroup>
+  <Accordion title="Metric Name Dimension" icon="tag">
+    Create a dimension for the series name:
+    
+    ```json
+    {
+      "dimensionsSpec": {
+        "dimensions": [
+          "metric_name",  // Place first for best performance
+          "host",
+          "datacenter",
+          "environment"
+        ]
+      }
+    }
+    ```
+    
+    <Info>
+      Place the metric name first in the dimensions list for better locality and performance.
+    </Info>
+  </Accordion>
+  
+  <Accordion title="Tags as Dimensions" icon="tags">
+    What time series databases call "tags" become dimensions in Druid:
+    
+    ```json
+    {
+      "dimensions": [
+        "metric_name",
+        "host",
+        "region",
+        "availability_zone"
+      ]
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Configure Metrics" icon="chart-bar">
+    Define aggregations for the types of queries you'll run:
+    
+    ```json
+    {
+      "metricsSpec": [
+        {"type": "doubleSum", "name": "sum", "fieldName": "value"},
+        {"type": "doubleMin", "name": "min", "fieldName": "value"},
+        {"type": "doubleMax", "name": "max", "fieldName": "value"},
+        {"type": "approxHistogram", "name": "histogram", "fieldName": "value"}
+      ]
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+<Info>
+  Enable [rollup](/ingestion/rollup) to combine data points at different time granularities or to merge timeseries and non-timeseries data.
+</Info>
+
+### Log Aggregation Systems
+
+<Accordion title="Key Differences" icon="file-lines">
+  **Explicit Schema vs Schema-less**
+  
+  Unlike Elasticsearch or Splunk, Druid requires more explicit schema definition upfront.
+</Accordion>
+
+#### Tips for Log Data
+
+<AccordionGroup>
+  <Accordion title="Schema Discovery" icon="magnifying-glass">
+    If you don't know the columns ahead of time, use automatic schema discovery:
+    
+    ```json
+    {
+      "dimensionsSpec": {
+        "useSchemaDiscovery": true,
+        "dimensionExclusions": ["timestamp", "message"]
+      }
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Nested Data" icon="sitemap">
+    For nested JSON logs, you have two options:
+    
+    <Tabs>
+      <Tab title="Nested Columns">
+        Use Druid's native nested column support:
+        
+        ```json
+        {
+          "dimensionsSpec": {
+            "dimensions": [
+              {
+                "type": "json",
+                "name": "request_headers"
+              }
+            ]
+          }
+        }
+        ```
+      </Tab>
+      
+      <Tab title="Flatten">
+        Flatten nested structures:
+        
+        ```json
+        {
+          "inputFormat": {
+            "type": "json",
+            "flattenSpec": {
+              "fields": [
+                {"type": "path", "name": "user_agent", "expr": "$.request.headers.user_agent"}
+              ]
+            }
+          }
+        }
+        ```
+      </Tab>
+    </Tabs>
+  </Accordion>
+  
+  <Accordion title="Rollup for Analytics" icon="chart-mixed">
+    Enable rollup if you have analytical use cases:
+    
+    ```json
+    {
+      "granularitySpec": {
+        "rollup": true,
+        "queryGranularity": "minute"
+      }
+    }
+    ```
+    
+    <Warning>
+      With rollup enabled, you lose the ability to retrieve individual log events.
+    </Warning>
+  </Accordion>
+</AccordionGroup>
+
+## General Best Practices
+
+### Partitioning and Sorting
+
+<Card title="Optimize Partitioning" icon="chart-pie" href="/ingestion/partitioning">
+  Proper partitioning and sorting can substantially impact footprint and performance.
+</Card>
+
+<Tabs>
+  <Tab title="Time-based">
+    Choose appropriate segment granularity:
+    
+    - High-volume data: `HOUR`
+    - Medium-volume: `DAY`
+    - Low-volume: `WEEK` or `MONTH`
+  </Tab>
+  
+  <Tab title="Secondary Partitioning">
+    For time series data, partition by metric name:
+    
+    ```json
+    {
+      "partitionsSpec": {
+        "type": "single_dim",
+        "partitionDimension": "metric_name",
+        "targetRowsPerSegment": 5000000
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+### High Cardinality Columns
+
+<Accordion title="Use Sketches" icon="chart-line">
+  For high cardinality columns like user IDs, use sketches for approximate analysis:
+  
+  <Tabs>
+    <Tab title="HyperLogLog">
+      For count-distinct queries:
+      
+      ```json
+      {
+        "metricsSpec": [
+          {
+            "type": "hyperUnique",
+            "name": "unique_users",
+            "fieldName": "user_id"
+          }
+        ]
+      }
+      ```
+    </Tab>
+    
+    <Tab title="Theta Sketch">
+      For set operations:
+      
+      ```json
+      {
+        "metricsSpec": [
+          {
+            "type": "thetaSketch",
+            "name": "user_sketch",
+            "fieldName": "user_id"
+          }
+        ]
+      }
+      ```
+    </Tab>
+    
+    <Tab title="Quantiles">
+      For percentile queries:
+      
+      ```json
+      {
+        "metricsSpec": [
+          {
+            "type": "quantilesDoublesSketch",
+            "name": "latency_quantiles",
+            "fieldName": "latency_ms"
+          }
+        ]
+      }
+      ```
+    </Tab>
+  </Tabs>
+  
+  **Benefits:**
+  - Improved rollup ratios (collapse multiple distinct values)
+  - Reduced memory footprint at query time
+  - Faster aggregation of approximate results
+</Accordion>
+
+### String vs Numeric Dimensions
+
+<Tabs>
+  <Tab title="Performance Trade-offs">
+    **Numeric Dimensions (Long, Double, Float)**
+    
+    ✅ Faster to group on  
+    ❌ Slower to filter on (no indexes)  
+    ✅ Less memory usage
+    
+    **String Dimensions**
+    
+    ✅ Faster to filter on (with indexes)  
+    ❌ Slower to group on  
+    ❌ More memory usage
+  </Tab>
+  
+  <Tab title="Example">
+    ```json
+    {
+      "dimensionsSpec": {
+        "dimensions": [
+          "country",  // String - frequently filtered
+          {
+            "type": "long",
+            "name": "user_id"  // Numeric - frequently grouped
+          },
+          {
+            "type": "long",
+            "name": "age"  // Numeric - frequently grouped
+          }
+        ]
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Tip>
+  Configure columns as numeric dimensions if you primarily group by them. Use string dimensions if you primarily filter on them.
+</Tip>
+
+### Secondary Timestamps
+
+<AccordionGroup>
+  <Accordion title="Store as Long Dimensions" icon="clock">
+    If you have multiple timestamps, store additional ones as long-typed dimensions:
+    
+    ```json
+    {
+      "dimensionsSpec": {
+        "dimensions": [
+          {
+            "type": "long",
+            "name": "created_time"
+          },
+          {
+            "type": "long",
+            "name": "updated_time"
+          }
+        ]
+      }
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Convert with Transform" icon="arrows-rotate">
+    Use `transformSpec` to convert timestamps to milliseconds:
+    
+    ```json
+    {
+      "transformSpec": {
+        "transforms": [
+          {
+            "type": "expression",
+            "name": "created_time",
+            "expression": "timestamp_parse(created_at, 'yyyy-MM-dd HH:mm:ss')"
+          }
+        ]
+      }
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Query Secondary Timestamps" icon="magnifying-glass">
+    Use SQL time functions at query time:
+    
+    ```sql
+    SELECT 
+      MILLIS_TO_TIMESTAMP(created_time) as created_at,
+      TIME_FLOOR(MILLIS_TO_TIMESTAMP(updated_time), 'PT1H') as hour
+    FROM datasource
+    WHERE created_time > TIMESTAMP_TO_MILLIS(CURRENT_TIMESTAMP - INTERVAL '7' DAY)
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Nested Dimensions
+
+<Tabs>
+  <Tab title="Native Support">
+    Use `COMPLEX<json>` for nested data:
+    
+    ```json
+    {
+      "dimensionsSpec": {
+        "dimensions": [
+          {
+            "type": "json",
+            "name": "user_metadata"
+          }
+        ]
+      }
+    }
+    ```
+    
+    Query with JSON functions:
+    
+    ```sql
+    SELECT 
+      JSON_VALUE(user_metadata, '$.preferences.theme'),
+      COUNT(*)
+    FROM datasource
+    GROUP BY 1
+    ```
+  </Tab>
+  
+  <Tab title="Flatten">
+    Flatten nested data during ingestion:
+    
+    ```json
+    {
+      "inputFormat": {
+        "type": "json",
+        "flattenSpec": {
+          "fields": [
+            {"type": "path", "name": "user_theme", "expr": "$.user.preferences.theme"},
+            {"type": "path", "name": "user_language", "expr": "$.user.preferences.language"}
+          ]
+        }
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+### Counting Ingested Events
+
+<Warning>
+  With rollup enabled, a `count` aggregator at query time tells you the number of Druid rows, not the number of ingested events.
+</Warning>
+
+<Tabs>
+  <Tab title="At Ingestion">
+    Use a count metric during ingestion:
+    
+    ```json
+    {
+      "metricsSpec": [
+        {
+          "type": "count",
+          "name": "count"
+        }
+      ]
+    }
+    ```
+  </Tab>
+  
+  <Tab title="At Query Time">
+    Use `longSum` to get the total ingested events:
+    
+    ```json
+    {
+      "aggregations": [
+        {
+          "type": "longSum",
+          "name": "numIngestedEvents",
+          "fieldName": "count"
+        }
+      ]
+    }
+    ```
+    
+    Or in SQL:
+    
+    ```sql
+    SELECT SUM(count) as total_events FROM datasource
+    ```
+  </Tab>
+</Tabs>
+
+### Schema Auto-Discovery
+
+<Tabs>
+  <Tab title="Type-Aware" >
+    **Recommended for most use cases**
+    
+    ```json
+    {
+      "dimensionsSpec": {
+        "useSchemaDiscovery": true,
+        "dimensionExclusions": ["timestamp"]
+      }
+    }
+    ```
+    
+    Druid infers:
+    - `STRING`, `LONG`, `DOUBLE`
+    - `ARRAY<STRING>`, `ARRAY<LONG>`, `ARRAY<DOUBLE>`
+    - `COMPLEX<json>` for nested data
+  </Tab>
+  
+  <Tab title="String-Based">
+    **Legacy approach**
+    
+    ```json
+    {
+      "dimensionsSpec": {
+        "dimensions": [],
+        "includeAllDimensions": true
+      }
+    }
+    ```
+    
+    - All discovered columns typed as strings
+    - Nested data structures are ignored
+  </Tab>
+</Tabs>
+
+<Warning>
+  Type-aware schema discovery can impact downstream BI tools depending on how they handle ARRAY typed columns.
+</Warning>
+
+### Same Column as Dimension and Metric
+
+<Accordion title="Use Case: Unique IDs" icon="fingerprint">
+  To filter on an ID while also computing unique counts:
+  
+  ```json
+  {
+    "dimensionsSpec": {
+      "dimensions": [
+        "user_id"  // For filtering
+      ]
+    },
+    "metricsSpec": [
+      {
+        "type": "hyperUnique",
+        "name": "unique_users",
+        "fieldName": "user_id"  // For unique counts
+      }
+    ]
+  }
+  ```
+</Accordion>
+
+## Complete Example
+
+<CodeGroup>
+```json E-commerce Schema
+{
+  "dataSchema": {
+    "dataSource": "ecommerce_events",
+    "timestampSpec": {
+      "column": "timestamp",
+      "format": "iso"
+    },
+    "dimensionsSpec": {
+      "dimensions": [
+        "event_type",
+        "product_id",
+        "product_name",
+        "product_category",
+        "country",
+        "city",
+        {
+          "type": "long",
+          "name": "user_id"
+        },
+        {
+          "type": "double",
+          "name": "price"
+        }
+      ]
+    },
+    "metricsSpec": [
+      {
+        "type": "count",
+        "name": "count"
+      },
+      {
+        "type": "doubleSum",
+        "name": "revenue",
+        "fieldName": "price"
+      },
+      {
+        "type": "hyperUnique",
+        "name": "unique_users",
+        "fieldName": "user_id"
+      },
+      {
+        "type": "hyperUnique",
+        "name": "unique_products",
+        "fieldName": "product_id"
+      }
+    ],
+    "granularitySpec": {
+      "segmentGranularity": "HOUR",
+      "queryGranularity": "MINUTE",
+      "rollup": true
+    }
+  }
+}
+```
+</CodeGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Schema Model" icon="table" href="/ingestion/schema-model">
+    Learn about the core schema concepts
+  </Card>
+  <Card title="Partitioning" icon="chart-pie" href="/ingestion/partitioning">
+    Optimize partitioning for your use case
+  </Card>
+  <Card title="Data Rollup" icon="compress" href="/ingestion/rollup">
+    Understand rollup in detail
+  </Card>
+  <Card title="Nested Columns" icon="sitemap" href="/querying/nested-columns">
+    Work with nested JSON data
+  </Card>
+</CardGroup>

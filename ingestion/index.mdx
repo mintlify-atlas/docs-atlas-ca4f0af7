@@ -1,0 +1,163 @@
+---
+title: Data Ingestion Overview
+description: Learn about loading data into Apache Druid through streaming and batch ingestion methods
+---
+
+Loading data in Druid is called **ingestion** or **indexing**. When you ingest data into Druid, Druid reads the data from your source system and stores it in data files called segments.
+
+In general, segment files contain a few million rows each.
+
+## How Ingestion Works
+
+For most ingestion methods, the Druid Middle Manager processes or the Indexer processes load your source data.
+
+During ingestion, Druid creates segments and stores them in deep storage. Historical nodes load the segments into memory to respond to queries. For streaming ingestion, the Middle Managers and indexers can respond to queries in real-time with arriving data.
+
+## Core Concepts
+
+Before you start ingesting data, familiarize yourself with these key concepts:
+
+<CardGroup cols={2}>
+  <Card title="Schema Model" icon="table" href="/ingestion/schema-model">
+    Learn about datasources, primary timestamp, dimensions, and metrics
+  </Card>
+  <Card title="Data Rollup" icon="layer-group" href="/ingestion/rollup">
+    Understand rollup and how to maximize its benefits
+  </Card>
+  <Card title="Partitioning" icon="chart-pie" href="/ingestion/partitioning">
+    Learn about time chunk and secondary partitioning
+  </Card>
+  <Card title="Schema Design" icon="sitemap" href="/ingestion/schema-design">
+    Best practices for designing your Druid schema
+  </Card>
+</CardGroup>
+
+## Ingestion Methods
+
+### Streaming Ingestion
+
+Streaming ingestion is controlled by a continuously-running supervisor that manages indexing tasks.
+
+<Tabs>
+  <Tab title="Kafka">
+    **Apache Kafka Integration**
+    
+    - Supervisor type: `kafka`
+    - Reads directly from Apache Kafka
+    - Can ingest late data: Yes
+    - Exactly-once guarantees: Yes
+    
+    <Card title="Kafka Ingestion Guide" icon="brands fa-kafka" href="/ingestion/kafka">
+      Learn how to ingest from Apache Kafka
+    </Card>
+  </Tab>
+  
+  <Tab title="Kinesis">
+    **Amazon Kinesis Integration**
+    
+    - Supervisor type: `kinesis`
+    - Reads directly from Amazon Kinesis
+    - Can ingest late data: Yes
+    - Exactly-once guarantees: Yes
+    
+    <Card title="Kinesis Ingestion Guide" icon="brands fa-aws" href="/ingestion/kinesis">
+      Learn how to ingest from Amazon Kinesis
+    </Card>
+  </Tab>
+</Tabs>
+
+### Batch Ingestion
+
+Batch ingestion jobs are associated with a controller task that runs for the duration of the job.
+
+<AccordionGroup>
+  <Accordion title="Native Batch" icon="file-code">
+    **JSON-based Batch Ingestion**
+    
+    - Controller task type: `index_parallel`
+    - Submit via Tasks API
+    - No external dependencies
+    - Supports any inputSource and inputFormat
+    - Dynamic, hash-based, and range-based partitioning
+    
+    <Card title="Native Batch Guide" href="/ingestion/native-batch">
+      Learn about JSON-based batch ingestion
+    </Card>
+  </Accordion>
+  
+  <Accordion title="SQL-based" icon="database">
+    **Multi-Stage Query Engine**
+    
+    - Controller task type: `query_controller`
+    - Submit INSERT or REPLACE statements
+    - No external dependencies
+    - Range partitioning with CLUSTERED BY
+    - Always perfect rollup
+  </Accordion>
+  
+  <Accordion title="Hadoop (Deprecated)" icon="elephant">
+    **Hadoop-based Ingestion**
+    
+    - Controller task type: `index_hadoop`
+    - Requires Hadoop cluster
+    - Hash-based or range-based partitioning
+    - Always perfect rollup
+  </Accordion>
+</AccordionGroup>
+
+## Feature Comparison
+
+<ResponseField name="Parallelism">
+  - **Native batch**: Using subtasks if `maxNumConcurrentSubTasks` > 1
+  - **SQL**: Using `query_worker` subtasks
+  - **Hadoop**: Using YARN
+</ResponseField>
+
+<ResponseField name="Fault Tolerance">
+  - **Native batch**: Workers automatically relaunched upon failure
+  - **SQL**: Controller or worker task failure leads to job failure
+  - **Hadoop**: YARN containers automatically relaunched upon failure
+</ResponseField>
+
+<ResponseField name="Operations">
+  - **Native batch**: Can append and overwrite
+  - **SQL**: Can INSERT (append) and REPLACE (overwrite)
+  - **Hadoop**: Can overwrite only
+</ResponseField>
+
+## Getting Started
+
+<Steps>
+  <Step title="Choose Your Ingestion Method">
+    Select streaming for real-time data or batch for historical data
+  </Step>
+  
+  <Step title="Design Your Schema">
+    Define your datasource, timestamp, dimensions, and metrics
+  </Step>
+  
+  <Step title="Configure Your Spec">
+    Create an ingestion spec with dataSchema, ioConfig, and tuningConfig
+  </Step>
+  
+  <Step title="Submit and Monitor">
+    Submit your spec and monitor the ingestion process
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Data Formats" icon="file-alt" href="/ingestion/data-formats">
+    Learn about supported input formats like JSON, CSV, Parquet, and Avro
+  </Card>
+  <Card title="Supervisor" icon="eye" href="/ingestion/supervisor">
+    Understand supervisors for streaming ingestion
+  </Card>
+  <Card title="Input Sources" icon="inbox" href="/ingestion/input-sources">
+    Configure data sources like S3, HDFS, and local files
+  </Card>
+  <Card title="Ingestion Spec" icon="file-code" href="/ingestion/ingestion-spec">
+    Complete reference for ingestion specifications
+  </Card>
+</CardGroup>

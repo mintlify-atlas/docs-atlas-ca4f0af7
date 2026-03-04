@@ -1,0 +1,522 @@
+---
+title: Data Deletion  
+description: Delete data in Apache Druid by time range, specific records, or entire datasources. Learn about soft deletes, hard deletes, and permanent deletion with kill tasks.
+---
+
+Apache Druid stores data in immutable segments partitioned by time chunk. This guide covers the different methods for deleting data from your Druid cluster.
+
+## Deletion Overview
+
+Druid supports two levels of deletion:
+
+- **Soft delete** (mark unused): Data unavailable for queries but remains in deep storage
+- **Hard delete** (kill): Permanently removes data from deep storage and metadata store
+
+<Warning>
+Hard deletes using kill tasks are permanent and cannot be undone unless you have backups.
+</Warning>
+
+## Delete by Time Range
+
+Deleting data by time range is a fast, metadata-only operation that happens in two steps:
+
+<Steps>
+  <Step title="Mark Segments as Unused">
+    Segments are marked "unused" via drop rules or manual API calls. This is a soft delete - data becomes unavailable for queries but remains in deep storage.
+  </Step>
+  
+  <Step title="Permanently Delete (Optional)">
+    Use a kill task to permanently delete segment files from deep storage and remove metadata records.
+  </Step>
+</Steps>
+
+### Manual Time Range Deletion
+
+Use the Coordinator API to mark segments as unused:
+
+```bash
+curl -X POST 'http://localhost:8081/druid/coordinator/v1/datasources/wikipedia/markUnused' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "interval": "2023-01-01/2023-02-01"
+}'
+```
+
+<Note>
+This is a soft delete. Segments remain in deep storage until you run a kill task.
+</Note>
+
+See [Legacy Metadata API](../api-reference/legacy-metadata-api#datasources) for API details.
+
+### Automatic Deletion with Drop Rules
+
+Use retention rules to automatically mark segments as unused based on time:
+
+```json
+[
+  {
+    "type": "loadByPeriod",
+    "period": "P30D",
+    "tieredReplicants": {
+      "_default_tier": 2
+    }
+  },
+  {
+    "type": "dropForever"
+  }
+]
+```
+
+This configuration:
+1. Loads segments from the last 30 days
+2. Drops all other segments
+
+**Apply via API**:
+
+```bash
+curl -X POST 'http://localhost:8081/druid/coordinator/v1/rules/wikipedia' \
+--header 'Content-Type: application/json' \
+--data-raw '[{
+  "type": "dropBeforeByPeriod",
+  "period": "P90D"
+}]'
+```
+
+<Note>
+Dropped segments remain in deep storage. Enable auto-kill or use kill tasks for permanent deletion.
+</Note>
+
+See [Retention Rules](../operations/rule-configuration) for all rule types.
+
+## Delete Specific Records
+
+Druid doesn't support deleting individual records directly. Instead, use reindexing with a filter to exclude unwanted data.
+
+### Native Batch Reindex with Filter
+
+Filter out records during reindex:
+
+```json
+{
+  "type": "index_parallel",
+  "spec": {
+    "dataSchema": {
+      "dataSource": "wikipedia",
+      "transformSpec": {
+        "filter": {
+          "type": "not",
+          "field": {
+            "type": "selector",
+            "dimension": "userName",
+            "value": "bot"
+          }
+        }
+      },
+      "granularitySpec": {
+        "segmentGranularity": "day",
+        "intervals": ["2023-01-01/2023-02-01"]
+      }
+    },
+    "ioConfig": {
+      "type": "index_parallel",
+      "inputSource": {
+        "type": "druid",
+        "dataSource": "wikipedia",
+        "interval": "2023-01-01/2023-02-01"
+      },
+      "appendToExisting": false
+    },
+    "tuningConfig": {
+      "type": "index_parallel",
+      "maxRowsPerSegment": 5000000
+    }
+  }
+}
+```
+
+**Key settings**:
+- `transformSpec.filter` with `type: "not"` excludes matching records
+- `inputSource.type: "druid"` reads from existing datasource  
+- `appendToExisting: false` replaces existing segments
+
+### SQL REPLACE with Filter
+
+Use SQL to exclude specific records:
+
+```sql
+REPLACE INTO wikipedia
+OVERWRITE WHERE __time >= '2023-01-01' AND __time < '2023-02-01'
+SELECT
+  __time,
+  channel,
+  "user",
+  added,
+  deleted
+FROM wikipedia
+WHERE __time >= '2023-01-01' 
+  AND __time < '2023-02-01'
+  AND userName != 'bot'
+PARTITIONED BY DAY
+```
+
+### Delete Multiple Values
+
+Exclude multiple values using NOT IN or complex filters:
+
+```json
+{
+  "transformSpec": {
+    "filter": {
+      "type": "not",
+      "field": {
+        "type": "in",
+        "dimension": "country",
+        "values": ["XX", "UNKNOWN", "TEST"]
+      }
+    }
+  }
+}
+```
+
+Or in SQL:
+```sql
+WHERE country NOT IN ('XX', 'UNKNOWN', 'TEST')
+```
+
+### Delete by Condition
+
+Remove records matching complex conditions:
+
+```json
+{
+  "transformSpec": {
+    "filter": {
+      "type": "and",
+      "fields": [
+        {
+          "type": "not",
+          "field": {"type": "selector", "dimension": "is_deleted", "value": "true"}
+        },
+        {
+          "type": "bound",
+          "dimension": "value",
+          "lower": "0",
+          "lowerStrict": false
+        }
+      ]
+    }
+  }
+}
+```
+
+<Note>
+Reindexed data marked as unused still remains in deep storage. Run a kill task for permanent deletion.
+</Note>
+
+See [Transform Spec](../ingestion/ingestion-spec#transformspec) for filter options.
+
+## Delete Entire Datasource
+
+To delete all data in a datasource:
+
+<Steps>
+  <Step title="Mark All Segments Unused">
+    Use the Coordinator API or web console to mark all segments as unused.
+  </Step>
+  
+  <Step title="Kill Segments (Optional)">
+    Submit a kill task to permanently delete from deep storage.
+  </Step>
+  
+  <Step title="Remove Datasource Metadata (Optional)">
+    The datasource metadata will be removed automatically after all segments are killed.
+  </Step>
+</Steps>
+
+### Via Web Console
+
+1. Navigate to **Datasources**
+2. Click the datasource name
+3. Select **Actions > Mark all segments as unused**
+4. Optionally, submit a kill task for permanent deletion
+
+### Via API
+
+```bash
+curl -X POST 'http://localhost:8081/druid/coordinator/v1/datasources/wikipedia/markUnused' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "interval": "1000-01-01/3000-01-01"
+}'
+```
+
+## Permanent Deletion with Kill Tasks
+
+Kill tasks permanently delete unused segments from deep storage and the metadata store.
+
+### Kill Task Syntax
+
+```json
+{
+  "type": "kill",
+  "id": "kill_wikipedia_2023",
+  "dataSource": "wikipedia",
+  "interval": "2023-01-01/2024-01-01",
+  "versions": null,
+  "batchSize": 100,
+  "limit": null,
+  "maxUsedStatusLastUpdatedTime": null
+}
+```
+
+### Kill Task Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `type` | - | Must be `"kill"` |
+| `dataSource` | - | Datasource name |
+| `interval` | - | Time range of segments to kill |
+| `versions` | null (all) | Specific segment versions to delete |
+| `batchSize` | 100 | Segments deleted per batch to avoid blocking Overlord |
+| `limit` | null (no limit) | Maximum number of segments to delete |
+| `maxUsedStatusLastUpdatedTime` | null (no cutoff) | Only kill segments marked unused before this timestamp |
+
+### Submit Kill Task
+
+Via API:
+
+```bash
+curl -X POST 'http://localhost:8081/druid/indexer/v1/task' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "type": "kill",
+  "dataSource": "wikipedia",
+  "interval": "2023-01-01/2023-02-01",
+  "batchSize": 200
+}'
+```
+
+Via web console:
+1. Navigate to **Tasks**
+2. Click **Submit task**
+3. Paste kill task JSON
+4. Click **Submit**
+
+<Warning>
+Kill tasks permanently remove all information about affected segments from the metadata store and deep storage. This operation cannot be undone.
+</Warning>
+
+### Kill Specific Versions
+
+Delete only certain segment versions:
+
+```json
+{
+  "type": "kill",
+  "dataSource": "wikipedia",
+  "interval": "2023-01-01/2023-02-01",
+  "versions": ["2023-01-15T10:00:00.000Z", "2023-01-20T15:30:00.000Z"]
+}
+```
+
+## Auto-Kill Unused Segments
+
+Automate permanent deletion of unused segments.
+
+### Auto-Kill on Coordinator
+
+Enable auto-kill in Coordinator runtime properties:
+
+```properties
+druid.coordinator.kill.on=true
+druid.coordinator.kill.period=P1D
+druid.coordinator.kill.durationToRetain=P7D
+druid.coordinator.kill.maxSegments=1000
+```
+
+**Configuration**:
+- `kill.on`: Enable auto-kill (default: false)
+- `kill.period`: How often to run kill tasks
+- `kill.durationToRetain`: Keep unused segments this long before killing
+- `kill.maxSegments`: Maximum segments to kill per invocation
+
+The Coordinator periodically:
+1. Identifies unused segments older than `durationToRetain`
+2. Submits kill tasks for eligible intervals
+3. Processes up to `maxSegments` per run
+
+See [Data Management Configuration](../configuration/index#data-management) for all options.
+
+### Auto-Kill on Overlord (Experimental)
+
+<Warning>
+This is an experimental feature. Do not use if auto-kill is enabled on the Coordinator.
+</Warning>
+
+Requires segment metadata caching enabled on Overlord:
+
+```properties
+druid.manager.segments.useIncrementalCache=always
+druid.indexer.task.killUnusedSegments.on=true  
+druid.indexer.task.killUnusedSegments.durationToRetain=P7D
+```
+
+**Benefits of Overlord auto-kill**:
+- No REST API overhead between tasks and Overlord
+- Kills segments as soon as they become eligible
+- Runs on Overlord, doesn't consume task slots
+- Faster execution (no task process launch overhead)
+- Skips locked intervals to avoid blocking
+- Handles large numbers of unused segments efficiently
+
+See [Auto-Kill Configuration](../configuration/index#auto-kill-unused-segments-experimental) for details.
+
+## Deletion Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Test First" icon="flask">
+    Test deletion logic on a small time range before applying to production data.
+  </Card>
+  
+  <Card title="Use Batch Size" icon="layer-group">
+    Set appropriate `batchSize` in kill tasks to avoid blocking Overlord operations.
+  </Card>
+  
+  <Card title="Retention Buffer" icon="clock">
+    Set `durationToRetain` to allow time to recover from accidental soft deletes.
+  </Card>
+  
+  <Card title="Monitor Kill Tasks" icon="chart-line">
+    Watch kill task metrics and logs to ensure deletions complete successfully.
+  </Card>
+</CardGroup>
+
+## Common Deletion Patterns
+
+### Delete Old Data Periodically
+
+Combine retention rules with auto-kill:
+
+```properties
+# Retention rule (via API)
+{
+  "type": "dropBeforeByPeriod",
+  "period": "P90D"
+}
+
+# Auto-kill configuration  
+druid.coordinator.kill.on=true
+druid.coordinator.kill.durationToRetain=P7D
+```
+
+This:
+1. Drops segments older than 90 days
+2. Permanently deletes them after 7 days
+
+### Delete Test Data
+
+Remove test data by filter:
+
+```sql
+REPLACE INTO events
+OVERWRITE ALL
+SELECT *
+FROM events  
+WHERE environment != 'test'
+PARTITIONED BY DAY
+```
+
+Then kill the old segments:
+```json
+{
+  "type": "kill",
+  "dataSource": "events",
+  "interval": "1000-01-01/3000-01-01"
+}
+```
+
+### Gradual Datasource Deletion
+
+Delete a large datasource in batches:
+
+```bash
+# Month 1
+curl -X POST 'http://localhost:8081/druid/indexer/v1/task' \
+--data '{"type":"kill","dataSource":"logs","interval":"2023-01-01/2023-02-01","batchSize":500}'
+
+# Month 2  
+curl -X POST 'http://localhost:8081/druid/indexer/v1/task' \
+--data '{"type":"kill","dataSource":"logs","interval":"2023-02-01/2023-03-01","batchSize":500}'
+
+# Continue for each month...
+```
+
+### Delete PII After Retention Period
+
+Reindex to remove sensitive fields:
+
+```sql
+REPLACE INTO user_events
+OVERWRITE WHERE __time < CURRENT_TIMESTAMP - INTERVAL '1' YEAR  
+SELECT
+  __time,
+  user_id,
+  event_type,
+  -- Omit PII fields: email, ip_address, phone
+  country,
+  device_type
+FROM user_events
+WHERE __time < CURRENT_TIMESTAMP - INTERVAL '1' YEAR
+PARTITIONED BY DAY
+```
+
+## Troubleshooting
+
+### Segments Not Deleting
+
+Check:
+1. Are segments marked "unused"? Query metadata
+2. Do kill tasks have correct interval?
+3. Is `maxUsedStatusLastUpdatedTime` filtering segments?
+4. Check Overlord logs for kill task errors
+
+### Kill Tasks Timing Out
+
+Reduce `batchSize` to process fewer segments per batch:
+
+```json
+{
+  "batchSize": 50
+}
+```
+
+### Accidental Deletion
+
+If segments marked unused by mistake:
+1. Quickly mark them as "used" via API before kill task runs
+2. Restore from deep storage backups if already killed
+3. Re-ingest from source data if available
+
+<Warning>
+Always have backups of critical data before running kill tasks.
+</Warning>
+
+## Learn More
+
+<CardGroup cols={2}>
+  <Card title="Deletion Tutorial" icon="graduation-cap" href="../tutorials/tutorial-delete-data">
+    Step-by-step guide to deleting data
+  </Card>
+  
+  <Card title="Retention Rules" icon="clock" href="../operations/rule-configuration">
+    Configure automatic data retention
+  </Card>
+  
+  <Card title="Data Updates" icon="rotate" href="./update">
+    Reindex data to modify or filter records
+  </Card>
+  
+  <Card title="Metadata API" icon="code" href="../api-reference/legacy-metadata-api">
+    API reference for segment management
+  </Card>
+</CardGroup>

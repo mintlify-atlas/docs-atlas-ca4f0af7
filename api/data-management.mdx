@@ -1,0 +1,268 @@
+---
+title: "Data Management API"
+description: "HTTP API for managing data segments in Apache Druid"
+---
+
+<Warning>
+Coordinator APIs for data management are deprecated. Use the Overlord-based APIs documented here instead.
+
+Do not use these APIs while an indexing task or kill task is in progress for the same datasource and interval.
+</Warning>
+
+The Data Management API allows you to mark segments as used or unused and permanently delete them from Druid.
+
+## Segment management
+
+Segments marked as used can be automatically marked as unused by the Coordinator if they meet configured drop rules. To load segments onto Historical processes, you must also configure load rules.
+
+### Mark a single segment unused
+
+Marks a segment as unused using its segment ID. This is a "soft delete" that removes the segment from Historicals.
+
+<CodeGroup>
+```bash cURL
+curl --request DELETE \
+  "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/datasources/wikipedia_hour/segments/wikipedia_hour_2015-09-12T16:00:00.000Z_2015-09-12T17:00:00.000Z_2023-08-10T04:12:03.860Z" \
+  --header 'Content-Type: application/json' \
+  --header 'Accept: application/json, text/plain'
+```
+
+```http HTTP
+DELETE /druid/indexer/v1/datasources/wikipedia_hour/segments/wikipedia_hour_2015-09-12T16:00:00.000Z_2015-09-12T17:00:00.000Z_2023-08-10T04:12:03.860Z HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+Content-Type: application/json
+Accept: application/json, text/plain
+```
+</CodeGroup>
+
+<ParamField path="datasource" type="string" required>
+  Name of the datasource.
+</ParamField>
+
+<ParamField path="segmentId" type="string" required>
+  The full segment identifier.
+</ParamField>
+
+<ResponseExample>
+```json Success Response
+{
+    "segmentStateChanged": true,
+    "numChangedSegments": 1
+}
+```
+</ResponseExample>
+
+### Mark a single segment as used
+
+Marks a segment as used, making it eligible to be loaded by Historicals.
+
+<CodeGroup>
+```bash cURL
+curl --request POST \
+  "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/datasources/wikipedia_hour/segments/wikipedia_hour_2015-09-12T18:00:00.000Z_2015-09-12T19:00:00.000Z_2023-08-10T04:12:03.860Z" \
+  --header 'Content-Type: application/json' \
+  --header 'Accept: application/json, text/plain'
+```
+
+```http HTTP
+POST /druid/indexer/v1/datasources/wikipedia_hour/segments/wikipedia_hour_2015-09-12T18:00:00.000Z_2015-09-12T19:00:00.000Z_2023-08-10T04:12:03.860Z HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+Content-Type: application/json
+Accept: application/json, text/plain
+```
+</CodeGroup>
+
+<ParamField path="datasource" type="string" required>
+  Name of the datasource.
+</ParamField>
+
+<ParamField path="segmentId" type="string" required>
+  The full segment identifier.
+</ParamField>
+
+<ResponseExample>
+```json Success Response
+{
+    "segmentStateChanged": true,
+    "numChangedSegments": 1
+}
+```
+</ResponseExample>
+
+### Mark a group of segments unused
+
+Marks multiple segments as unused using an array of segment IDs or a time interval.
+
+<CodeGroup>
+```bash cURL - By Segment IDs
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/datasources/wikipedia_hour/markUnused" \
+--header 'Content-Type: application/json' \
+--data '{
+    "segmentIds": [
+        "wikipedia_hour_2015-09-12T14:00:00.000Z_2015-09-12T15:00:00.000Z_2023-08-10T04:12:03.860Z",
+        "wikipedia_hour_2015-09-12T04:00:00.000Z_2015-09-12T05:00:00.000Z_2023-08-10T04:12:03.860Z"
+    ]
+}'
+```
+
+```bash cURL - By Interval
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/datasources/wikipedia_hour/markUnused" \
+--header 'Content-Type: application/json' \
+--data '{
+    "interval": "2015-09-12T03:00:00.000Z/2015-09-12T05:00:00.000Z"
+}'
+```
+</CodeGroup>
+
+<ParamField body="interval" type="string">
+  ISO-8601 interval. Marks all segments completely within this interval as unused. Required if `segmentIds` not provided.
+</ParamField>
+
+<ParamField body="segmentIds" type="array">
+  Array of segment IDs to mark as unused. Required if `interval` not provided.
+</ParamField>
+
+<ParamField body="versions" type="array">
+  Optional list of segment versions to filter by. Must be provided with `interval`.
+</ParamField>
+
+<ResponseExample>
+```json Success Response
+{
+    "numChangedSegments": 2
+}
+```
+</ResponseExample>
+
+### Mark a group of segments used
+
+Marks multiple segments as used using an array of segment IDs or a time interval.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/datasources/wikipedia_hour/markUsed" \
+--header 'Content-Type: application/json' \
+--data '{
+    "segmentIds": [
+        "wikipedia_hour_2015-09-12T14:00:00.000Z_2015-09-12T15:00:00.000Z_2023-08-10T04:12:03.860Z",
+        "wikipedia_hour_2015-09-12T04:00:00.000Z_2015-09-12T05:00:00.000Z_2023-08-10T04:12:03.860Z"
+    ]
+}'
+```
+</CodeGroup>
+
+<ParamField body="interval" type="string">
+  ISO-8601 interval for segments to mark as used.
+</ParamField>
+
+<ParamField body="segmentIds" type="array">
+  Array of segment IDs to mark as used.
+</ParamField>
+
+<ParamField body="versions" type="array">
+  Optional segment versions filter.
+</ParamField>
+
+<ResponseExample>
+```json Success Response
+{
+    "numChangedSegments": 2
+}
+```
+</ResponseExample>
+
+### Mark all segments unused
+
+Marks all segments of a datasource as unused (soft delete).
+
+<CodeGroup>
+```bash cURL
+curl --request DELETE \
+  "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/datasources/wikipedia_hour"
+```
+
+```http HTTP
+DELETE /druid/indexer/v1/datasources/wikipedia_hour HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="datasource" type="string" required>
+  Name of the datasource.
+</ParamField>
+
+<ResponseExample>
+```json Success Response
+{
+    "numChangedSegments": 24
+}
+```
+</ResponseExample>
+
+### Mark all non-overshadowed segments used
+
+Marks all unused segments as used if they are not overshadowed by other segments.
+
+<CodeGroup>
+```bash cURL
+curl --request POST \
+  "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/datasources/wikipedia_hour" \
+  --header 'Content-Type: application/json' \
+  --header 'Accept: application/json, text/plain'
+```
+
+```http HTTP
+POST /druid/indexer/v1/datasources/wikipedia_hour HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+Content-Type: application/json
+Accept: application/json, text/plain
+```
+</CodeGroup>
+
+<ParamField path="datasource" type="string" required>
+  Name of the datasource.
+</ParamField>
+
+<ResponseExample>
+```json Success Response
+{
+    "numChangedSegments": 1
+}
+```
+</ResponseExample>
+
+## Segment deletion
+
+### Permanently delete segments
+
+Sends a kill task to permanently delete all metadata and deep storage files for unused segments in an interval.
+
+<Warning>
+This is a permanent deletion. The data cannot be recovered.
+</Warning>
+
+<CodeGroup>
+```bash cURL
+curl --request DELETE \
+  "http://ROUTER_IP:ROUTER_PORT/druid/coordinator/v1/datasources/wikipedia_hour/intervals/2015-09-12_2015-09-13"
+```
+
+```http HTTP
+DELETE /druid/coordinator/v1/datasources/wikipedia_hour/intervals/2015-09-12_2015-09-13 HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="datasource" type="string" required>
+  Name of the datasource.
+</ParamField>
+
+<ParamField path="interval" type="string" required>
+  ISO-8601 interval delimited by underscore (e.g., `2015-09-12_2015-09-13`).
+</ParamField>
+
+<ResponseExample>
+```json Success
+{}
+```
+</ResponseExample>

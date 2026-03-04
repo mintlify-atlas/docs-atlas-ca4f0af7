@@ -1,122 +1,166 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Apache Druid",
+  "theme": "sequoia",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#2adae3",
+    "light": "#248795",
+    "dark": "#1c2029"
   },
-  "favicon": "/favicon.svg",
+
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/apache/druid"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/apache/druid"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Getting Started",
             "pages": [
-              "index",
+              "introduction",
               "quickstart",
-              "development"
+              "design/architecture"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Design & Architecture",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "design/segments",
+              "design/storage",
+              "design/broker",
+              "design/coordinator",
+              "design/historical",
+              "design/overlord",
+              "design/middlemanager",
+              "design/indexer",
+              "design/router"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Data Ingestion",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "ingestion/index",
+              "ingestion/data-formats",
+              "ingestion/schema-model",
+              "ingestion/schema-design",
+              "ingestion/streaming",
+              "ingestion/native-batch",
+              "ingestion/kafka",
+              "ingestion/kinesis",
+              "ingestion/supervisor"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Querying",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "querying/sql",
+              "querying/datasource",
+              "querying/aggregations",
+              "querying/filters",
+              "querying/joins",
+              "querying/lookups",
+              "querying/multi-value-dimensions",
+              "querying/granularities"
+            ]
+          },
+          {
+            "group": "Data Management",
+            "pages": [
+              "data-management/index",
+              "data-management/compaction",
+              "data-management/retention",
+              "data-management/update",
+              "data-management/delete"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/high-availability",
+              "operations/metrics",
+              "operations/security",
+              "operations/performance-tuning",
+              "operations/web-console",
+              "operations/kubernetes"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/index",
+              "configuration/extensions",
+              "configuration/logging"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "HTTP APIs",
             "pages": [
-              "api-reference/introduction"
+              "api/overview",
+              "api/sql-api",
+              "api/json-querying",
+              "api/tasks",
+              "api/supervisor",
+              "api/data-management",
+              "api/retention-rules",
+              "api/compaction",
+              "api/service-status"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "SQL & JDBC",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/sql-jdbc",
+              "api/sql-ingestion"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Tutorials",
+        "groups": [
+          {
+            "group": "Getting Started Tutorials",
+            "pages": [
+              "tutorials/index",
+              "tutorials/docker",
+              "tutorials/cluster"
+            ]
+          },
+          {
+            "group": "Ingestion Tutorials",
+            "pages": [
+              "tutorials/tutorial-batch",
+              "tutorials/tutorial-kafka",
+              "tutorials/tutorial-append-data",
+              "tutorials/tutorial-update-data",
+              "tutorials/tutorial-compaction"
+            ]
+          },
+          {
+            "group": "Query Tutorials",
+            "pages": [
+              "tutorials/tutorial-query",
+              "tutorials/tutorial-rollup",
+              "tutorials/tutorial-retention"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

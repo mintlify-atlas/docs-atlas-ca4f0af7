@@ -1,0 +1,422 @@
+---
+title: "Service Status API"
+description: "HTTP API for monitoring Druid cluster services and health"
+---
+
+The Service Status API provides endpoints for monitoring the health and status of Apache Druid cluster components.
+
+## Common endpoints
+
+All Druid services support the following endpoints. The default ports are:
+
+| Service | Port |
+|---------|------|
+| Coordinator | 8081 |
+| Overlord | 8081 |
+| Router | 8888 |
+| Broker | 8082 |
+| Historical | 8083 |
+| MiddleManager | 8091 |
+
+### Get service information
+
+Retrieves Druid version, loaded extensions, memory usage, and other service information.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/status"
+```
+
+```http HTTP
+GET /status HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ResponseField name="version" type="string">
+  Druid version number.
+</ResponseField>
+
+<ResponseField name="modules" type="array">
+  Array of loaded extension modules with name, artifact, and version.
+</ResponseField>
+
+<ResponseField name="memory" type="object">
+  Memory statistics including maxMemory, totalMemory, freeMemory, usedMemory, and directMemory.
+</ResponseField>
+
+### Get service health
+
+Returns a boolean indicating if the service is running and accessible. Use this for automated health checks.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/status/health"
+```
+
+```http HTTP
+GET /status/health HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ResponseExample>
+```json Health Response
+true
+```
+</ResponseExample>
+
+### Get configuration properties
+
+Retrieves the current configuration properties for the service.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/status/properties"
+```
+
+```http HTTP
+GET /status/properties HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ResponseField name="properties" type="object">
+  Key-value pairs of all configuration properties.
+</ResponseField>
+
+### Get node discovery status
+
+Returns whether the node has been successfully added to the cluster via ZooKeeper.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/status/selfDiscovered/status"
+```
+
+```http HTTP
+GET /status/selfDiscovered/status HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ResponseExample>
+```json Discovery Status
+{
+    "selfDiscovered": true
+}
+```
+</ResponseExample>
+
+### Get node self-discovery status (HTTP code)
+
+Returns HTTP status codes to indicate node discovery. Use for monitoring systems that rely on status codes.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/status/selfDiscovered"
+```
+
+```http HTTP
+GET /status/selfDiscovered HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ResponseExample>
+```text 200 - Discovered
+
+```
+
+```text 503 - Not Discovered
+Service Unavailable
+```
+</ResponseExample>
+
+## Coordinator
+
+### Get Coordinator leader address
+
+Retrieves the address of the current leader Coordinator.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/coordinator/v1/leader"
+```
+
+```http HTTP
+GET /druid/coordinator/v1/leader HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ResponseExample>
+```text Leader Address
+http://localhost:8081
+```
+</ResponseExample>
+
+### Get Coordinator leader status
+
+Returns whether this server is the current leader Coordinator.
+
+<CodeGroup>
+```bash cURL
+curl "http://COORDINATOR_IP:COORDINATOR_PORT/druid/coordinator/v1/isLeader"
+```
+
+```http HTTP
+GET /druid/coordinator/v1/isLeader HTTP/1.1
+Host: http://COORDINATOR_IP:COORDINATOR_PORT
+```
+</CodeGroup>
+
+<ResponseExample>
+```json Leader Status
+{
+    "leader": true
+}
+```
+</ResponseExample>
+
+## Overlord
+
+### Get Overlord leader address
+
+Retrieves the address of the current leader Overlord.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/leader"
+```
+
+```http HTTP
+GET /druid/indexer/v1/leader HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ResponseExample>
+```text Leader Address
+http://localhost:8081
+```
+</ResponseExample>
+
+### Get Overlord leader status
+
+Returns whether this server is the current leader Overlord.
+
+<CodeGroup>
+```bash cURL
+curl "http://OVERLORD_IP:OVERLORD_PORT/druid/indexer/v1/isLeader"
+```
+
+```http HTTP
+GET /druid/indexer/v1/isLeader HTTP/1.1
+Host: http://OVERLORD_IP:OVERLORD_PORT
+```
+</CodeGroup>
+
+<ResponseExample>
+```json Leader Status
+{
+    "leader": true
+}
+```
+</ResponseExample>
+
+## Historical
+
+### Get segment load status
+
+Returns whether all segments in the local cache have been loaded.
+
+<CodeGroup>
+```bash cURL
+curl "http://HISTORICAL_IP:HISTORICAL_PORT/druid/historical/v1/loadstatus"
+```
+
+```http HTTP
+GET /druid/historical/v1/loadstatus HTTP/1.1
+Host: http://HISTORICAL_IP:HISTORICAL_PORT
+```
+</CodeGroup>
+
+<ResponseExample>
+```json Load Status
+{
+    "cacheInitialized": true
+}
+```
+</ResponseExample>
+
+### Get segment readiness
+
+Returns HTTP status code indicating if segments are loaded. Use for load balancer health checks.
+
+<CodeGroup>
+```bash cURL
+curl "http://HISTORICAL_IP:HISTORICAL_PORT/druid/historical/v1/readiness"
+```
+
+```http HTTP
+GET /druid/historical/v1/readiness HTTP/1.1
+Host: http://HISTORICAL_IP:HISTORICAL_PORT
+```
+</CodeGroup>
+
+<ResponseExample>
+```text 200 - Ready
+
+```
+
+```text 503 - Not Ready
+Service Unavailable
+```
+</ResponseExample>
+
+## Broker
+
+### Get Broker query load status
+
+Returns whether the Broker knows about all segments in the cluster.
+
+<CodeGroup>
+```bash cURL
+curl "http://BROKER_IP:BROKER_PORT/druid/broker/v1/loadstatus"
+```
+
+```http HTTP
+GET /druid/broker/v1/loadstatus HTTP/1.1
+Host: http://BROKER_IP:BROKER_PORT
+```
+</CodeGroup>
+
+<ResponseExample>
+```json Load Status
+{
+    "inventoryInitialized": true
+}
+```
+</ResponseExample>
+
+### Get Broker query readiness
+
+Returns HTTP status code indicating if the Broker is ready to accept queries.
+
+<CodeGroup>
+```bash cURL
+curl "http://BROKER_IP:BROKER_PORT/druid/broker/v1/readiness"
+```
+
+```http HTTP
+GET /druid/broker/v1/readiness HTTP/1.1
+Host: http://BROKER_IP:BROKER_PORT
+```
+</CodeGroup>
+
+<ResponseExample>
+```text 200 - Ready
+
+```
+
+```text 503 - Not Ready
+Service Unavailable
+```
+</ResponseExample>
+
+## MiddleManager
+
+### Get MiddleManager state
+
+Retrieves the enabled state of the MiddleManager process.
+
+<CodeGroup>
+```bash cURL
+curl "http://MIDDLEMANAGER_IP:MIDDLEMANAGER_PORT/druid/worker/v1/enabled"
+```
+
+```http HTTP
+GET /druid/worker/v1/enabled HTTP/1.1
+Host: http://MIDDLEMANAGER_IP:MIDDLEMANAGER_PORT
+```
+</CodeGroup>
+
+<ResponseExample>
+```json Enabled State
+{
+    "localhost:8091": true
+}
+```
+</ResponseExample>
+
+### Get active tasks
+
+Retrieves a list of active task IDs running on the MiddleManager.
+
+<CodeGroup>
+```bash cURL
+curl "http://MIDDLEMANAGER_IP:MIDDLEMANAGER_PORT/druid/worker/v1/tasks"
+```
+
+```http HTTP
+GET /druid/worker/v1/tasks HTTP/1.1
+Host: http://MIDDLEMANAGER_IP:MIDDLEMANAGER_PORT
+```
+</CodeGroup>
+
+<ResponseExample>
+```json Active Tasks
+[
+    "index_parallel_wikipedia_mgchefio_2023-06-13T22:18:05.360Z"
+]
+```
+</ResponseExample>
+
+### Disable MiddleManager
+
+Disables the MiddleManager, preventing new tasks from being assigned.
+
+<CodeGroup>
+```bash cURL
+curl --request POST \
+  "http://MIDDLEMANAGER_IP:MIDDLEMANAGER_PORT/druid/worker/v1/disable"
+```
+
+```http HTTP
+POST /druid/worker/v1/disable HTTP/1.1
+Host: http://MIDDLEMANAGER_IP:MIDDLEMANAGER_PORT
+```
+</CodeGroup>
+
+<ResponseExample>
+```json Disabled
+{
+    "localhost:8091": "disabled"
+}
+```
+</ResponseExample>
+
+### Enable MiddleManager
+
+Re-enables the MiddleManager to accept new tasks.
+
+<CodeGroup>
+```bash cURL
+curl --request POST \
+  "http://MIDDLEMANAGER_IP:MIDDLEMANAGER_PORT/druid/worker/v1/enable"
+```
+
+```http HTTP
+POST /druid/worker/v1/enable HTTP/1.1
+Host: http://MIDDLEMANAGER_IP:MIDDLEMANAGER_PORT
+```
+</CodeGroup>
+
+<ResponseExample>
+```json Enabled
+{
+    "localhost:8091": "enabled"
+}
+```
+</ResponseExample>

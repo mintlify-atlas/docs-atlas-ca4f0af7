@@ -1,0 +1,287 @@
+---
+title: Query Granularities
+description: Reference for time granularities in Apache Druid including simple, duration, and period granularities
+---
+
+Granularities determine how to bucket data across the time dimension - how to aggregate by hour, day, minute, etc., and how data is stored.
+
+<Note>
+This document describes native query granularities. For SQL time functions, see [SQL date and time functions](sql-scalar#date-and-time-functions).
+</Note>
+
+Use granularities in:
+- [Native queries](querying) to bucket results by time
+- [`granularitySpec`](../ingestion/ingestion-spec#granularityspec) section of ingestion specs to segment incoming data
+
+Specify granularity as:
+- [Simple string](#simple-granularities)
+- [Duration in milliseconds](#duration-granularities)
+- [ISO8601 period](#period-granularities)
+
+## Simple Granularities
+
+Simple granularities are strings that bucket timestamps by UTC time (days start at 00:00 UTC).
+
+**Supported granularities:**
+
+- `all` - Single bucket for everything
+- `none` - Millisecond granularity (equivalent to internal index granularity)
+- `second`
+- `minute`
+- `five_minute`
+- `ten_minute`
+- `fifteen_minute`
+- `thirty_minute`
+- `hour`
+- `six_hour`
+- `eight_hour`
+- `day`
+- `week`
+- `month`
+- `quarter`
+- `year`
+
+<Warning>
+- Don't use `none` in [timeseries queries](timeseriesquery) - Druid fills empty interior buckets with zeroes, creating results for every millisecond
+- Avoid `week` for ingestion partitioning - weeks don't align with months/years
+</Warning>
+
+### Example Data
+
+```json
+{"timestamp": "2013-08-31T01:02:33Z", "page": "AAA", "language": "en"}
+{"timestamp": "2013-09-01T01:02:33Z", "page": "BBB", "language": "en"}
+{"timestamp": "2013-09-02T23:32:45Z", "page": "CCC", "language": "en"}
+{"timestamp": "2013-09-03T03:32:45Z", "page": "DDD", "language": "en"}
+```
+
+### Hour Granularity Query
+
+```json
+{
+  "queryType": "groupBy",
+  "dataSource": "my_dataSource",
+  "granularity": "hour",
+  "dimensions": ["language"],
+  "aggregations": [{"type": "count", "name": "count"}],
+  "intervals": ["2000-01-01T00:00Z/3000-01-01T00:00Z"]
+}
+```
+
+Result:
+
+```json
+[
+  {"version": "v1", "timestamp": "2013-08-31T01:00:00.000Z", "event": {"count": 1, "language": "en"}},
+  {"version": "v1", "timestamp": "2013-09-01T01:00:00.000Z", "event": {"count": 1, "language": "en"}},
+  {"version": "v1", "timestamp": "2013-09-02T23:00:00.000Z", "event": {"count": 1, "language": "en"}},
+  {"version": "v1", "timestamp": "2013-09-03T03:00:00.000Z", "event": {"count": 1, "language": "en"}}
+]
+```
+
+### Day Granularity Query
+
+```json
+{
+  "queryType": "groupBy",
+  "dataSource": "my_dataSource",
+  "granularity": "day",
+  "dimensions": ["language"],
+  "aggregations": [{"type": "count", "name": "count"}],
+  "intervals": ["2000-01-01T00:00Z/3000-01-01T00:00Z"]
+}
+```
+
+Result:
+
+```json
+[
+  {"version": "v1", "timestamp": "2013-08-31T00:00:00.000Z", "event": {"count": 1, "language": "en"}},
+  {"version": "v1", "timestamp": "2013-09-01T00:00:00.000Z", "event": {"count": 1, "language": "en"}},
+  {"version": "v1", "timestamp": "2013-09-02T00:00:00.000Z", "event": {"count": 1, "language": "en"}},
+  {"version": "v1", "timestamp": "2013-09-03T00:00:00.000Z", "event": {"count": 1, "language": "en"}}
+]
+```
+
+### All Granularity Query
+
+```json
+{
+  "queryType": "groupBy",
+  "dataSource": "my_dataSource",
+  "granularity": "all",
+  "dimensions": ["language"],
+  "aggregations": [{"type": "count", "name": "count"}],
+  "intervals": ["2000-01-01T00:00Z/3000-01-01T00:00Z"]
+}
+```
+
+Result:
+
+```json
+[
+  {"version": "v1", "timestamp": "2000-01-01T00:00:00.000Z", "event": {"count": 4, "language": "en"}}
+]
+```
+
+<Note>
+Query time granularity smaller than ingestion `queryGranularity` produces results equivalent to the ingestion granularity, since finer detail isn't stored in the data.
+</Note>
+
+## Duration Granularities
+
+Duration granularities specify exact duration in milliseconds. Timestamps are returned as UTC.
+
+**Basic duration:**
+
+```json
+{"type": "duration", "duration": 7200000}
+```
+
+Chunks every 2 hours.
+
+**Duration with origin:**
+
+```json
+{"type": "duration", "duration": 3600000, "origin": "2012-01-01T00:30:00Z"}
+```
+
+Chunks every hour on the half-hour.
+
+| Property | Description | Required |
+|----------|-------------|----------|
+| `type` | Must be "duration" | Yes |
+| `duration` | Duration in milliseconds | Yes |
+| `origin` | Start counting from this timestamp | No (defaults to 1970-01-01T00:00:00Z) |
+
+### Example: 24-Hour Duration
+
+```json
+{
+  "queryType": "groupBy",
+  "dataSource": "my_dataSource",
+  "granularity": {"type": "duration", "duration": 86400000},
+  "dimensions": ["language"],
+  "aggregations": [{"type": "count", "name": "count"}],
+  "intervals": ["2000-01-01T00:00Z/3000-01-01T00:00Z"]
+}
+```
+
+Result:
+
+```json
+[
+  {"version": "v1", "timestamp": "2013-08-31T00:00:00.000Z", "event": {"count": 1, "language": "en"}},
+  {"version": "v1", "timestamp": "2013-09-01T00:00:00.000Z", "event": {"count": 1, "language": "en"}},
+  {"version": "v1", "timestamp": "2013-09-02T00:00:00.000Z", "event": {"count": 1, "language": "en"}},
+  {"version": "v1", "timestamp": "2013-09-03T00:00:00.000Z", "event": {"count": 1, "language": "en"}}
+]
+```
+
+### With Custom Origin
+
+```json
+{"type": "duration", "duration": 86400000, "origin": "2012-01-01T00:30:00Z"}
+```
+
+Result - buckets start at :30 minutes:
+
+```json
+[
+  {"version": "v1", "timestamp": "2013-08-31T00:30:00.000Z", "event": {"count": 1, "language": "en"}},
+  {"version": "v1", "timestamp": "2013-09-01T00:30:00.000Z", "event": {"count": 1, "language": "en"}},
+  {"version": "v1", "timestamp": "2013-09-02T00:30:00.000Z", "event": {"count": 1, "language": "en"}},
+  {"version": "v1", "timestamp": "2013-09-03T00:30:00.000Z", "event": {"count": 1, "language": "en"}}
+]
+```
+
+## Period Granularities
+
+Period granularities use [ISO8601](https://en.wikipedia.org/wiki/ISO_8601) period format (e.g., P2W, P3M, PT1H30M, PT0.750S).
+
+They support time zones which determine:
+- Where period boundaries start
+- Timezone of returned timestamps
+
+**Basic period:**
+
+```json
+{"type": "period", "period": "P2D", "timeZone": "America/Los_Angeles"}
+```
+
+Buckets by 2-day chunks in Pacific timezone.
+
+**Period with origin:**
+
+```json
+{"type": "period", "period": "P3M", "timeZone": "America/Los_Angeles", "origin": "2012-02-01T00:00:00-08:00"}
+```
+
+Buckets by 3-month quarters starting from February.
+
+| Property | Description | Required |
+|----------|-------------|----------|
+| `type` | Must be "period" | Yes |
+| `period` | ISO8601 period (e.g., P1D, PT1H) | Yes |
+| `timeZone` | Timezone (e.g., America/Los_Angeles) | No (defaults to UTC) |
+| `origin` | Start counting from this timestamp | No (defaults to 1970-01-01T00:00:00 in timeZone) |
+
+### Example: 1-Day Period in Pacific Time
+
+```json
+{
+  "queryType": "groupBy",
+  "dataSource": "my_dataSource",
+  "granularity": {"type": "period", "period": "P1D", "timeZone": "America/Los_Angeles"},
+  "dimensions": ["language"],
+  "aggregations": [{"type": "count", "name": "count"}],
+  "intervals": ["1999-12-31T16:00:00.000-08:00/2999-12-31T16:00:00.000-08:00"]
+}
+```
+
+Result - timestamps in Pacific time:
+
+```json
+[
+  {"version": "v1", "timestamp": "2013-08-30T00:00:00.000-07:00", "event": {"count": 1, "language": "en"}},
+  {"version": "v1", "timestamp": "2013-08-31T00:00:00.000-07:00", "event": {"count": 1, "language": "en"}},
+  {"version": "v1", "timestamp": "2013-09-02T00:00:00.000-07:00", "event": {"count": 2, "language": "en"}}
+]
+```
+
+Note: Rows at `2013-09-02T23:32:45Z` and `2013-09-03T03:32:45Z` are in the same bucket (same Pacific day).
+
+<Note>
+The `intervals` in the query are NOT converted to the specified timezone. The timezone only affects result timestamps and bucketing.
+</Note>
+
+### With Custom Origin
+
+```json
+{"type": "period", "period": "P1D", "timeZone": "America/Los_Angeles", "origin": "1970-01-01T20:30:00-08:00"}
+```
+
+Result - buckets start at 20:30:
+
+```json
+[
+  {"version": "v1", "timestamp": "2013-08-29T20:30:00.000-07:00", "event": {"count": 1, "language": "en"}},
+  {"version": "v1", "timestamp": "2013-08-30T20:30:00.000-07:00", "event": {"count": 1, "language": "en"}},
+  {"version": "v1", "timestamp": "2013-09-01T20:30:00.000-07:00", "event": {"count": 1, "language": "en"}},
+  {"version": "v1", "timestamp": "2013-09-02T20:30:00.000-07:00", "event": {"count": 1, "language": "en"}}
+]
+```
+
+<Note>
+Origin only determines where to start the very first bucket - it doesn't affect timezone behavior.
+</Note>
+
+### Supported Timezones
+
+Druid uses [Joda Time library](http://www.joda.org) with standard IANA timezones. See [Joda Time supported timezones](http://joda-time.sourceforge.net/timezones.html).
+
+## Related Documentation
+
+- [SQL Date and Time Functions](sql-scalar#date-and-time-functions)
+- [Ingestion Spec Granularity](../ingestion/ingestion-spec#granularityspec)
+- [Native Queries](querying)

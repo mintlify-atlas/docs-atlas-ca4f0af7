@@ -1,0 +1,337 @@
+---
+title: Multi-Value Dimensions
+description: Learn about multi-value string dimensions in Apache Druid including ingestion, querying, filtering, and grouping behavior
+---
+
+Apache Druid supports "multi-value" string dimensions - dimensions containing an array of values instead of a single value.
+
+**Example multi-value dimension:**
+
+```json
+{"timestamp": "2011-01-12T00:00:00.000Z", "tags": ["t1", "t2", "t3"]}
+```
+
+<Warning>
+Multi-value dimensions are distinct from [array types](arrays). Arrays behave like standard SQL arrays, while multi-value dimensions have special implicit UNNEST behavior. See [differences below](#differences-between-arrays-and-multi-value-dimensions).
+</Warning>
+
+## Example Data
+
+The following examples use this dataset:
+
+```json
+{"timestamp": "2011-01-12T00:00:00.000Z", "label": "row1", "tags": ["t1","t2","t3"]}
+{"timestamp": "2011-01-13T00:00:00.000Z", "label": "row2", "tags": ["t3","t4","t5"]}
+{"timestamp": "2011-01-14T00:00:00.000Z", "label": "row3", "tags": ["t5","t6","t7"]}
+{"timestamp": "2011-01-14T00:00:00.000Z", "label": "row4", "tags": []}
+```
+
+## Ingestion
+
+### Native Batch and Streaming
+
+For native ingestion ([batch](../ingestion/native-batch) or streaming like [Kafka](../ingestion/kafka-ingestion)), configure `dimensionsSpec`:
+
+```json
+"dimensions": [
+  {
+    "type": "string",
+    "name": "label"
+  },
+  {
+    "type": "string",
+    "name": "tags",
+    "multiValueHandling": "SORTED_ARRAY",
+    "createBitmapIndex": true
+  }
+]
+```
+
+**Multi-value handling options:**
+
+- `SORTED_ARRAY` (default) - Sorts values in the array
+- `SORTED_SET` - Sorts values and removes duplicates
+- `ARRAY` - Retains original order
+
+For CSV/TSV data, specify delimiter using `listDelimiter` in `inputFormat`. JSON arrays require no special configuration.
+
+### SQL-Based Ingestion
+
+Use `ARRAY_TO_MV` to convert arrays to multi-value dimensions:
+
+```sql
+REPLACE INTO "mvd_example" OVERWRITE ALL
+WITH "ext" AS (
+  SELECT *
+  FROM TABLE(
+    EXTERN(
+      '{"type":"inline","data":"{...}"}',
+      '{"type":"json"}',
+      '[{"name":"timestamp", "type":"STRING"},{"name":"tags", "type":"ARRAY<STRING>"}]'
+    )
+  )
+)
+SELECT
+  TIME_PARSE("timestamp") AS "__time",
+  "label",
+  ARRAY_TO_MV("tags") AS "tags"
+FROM "ext"
+PARTITIONED BY DAY
+```
+
+### SQL-Based Ingestion with Rollup
+
+Convert arrays to multi-value dimensions after grouping:
+
+```sql
+REPLACE INTO "mvd_example_rollup" OVERWRITE ALL
+WITH "ext" AS (
+  SELECT * FROM TABLE(EXTERN(...))
+)
+SELECT
+  TIME_PARSE("timestamp") AS "__time",
+  "label",
+  ARRAY_TO_MV("tags") AS "tags",
+  COUNT(*) AS "count"
+FROM "ext"
+GROUP BY 1, 2, "tags"  -- Note: grouping on tags before ARRAY_TO_MV
+PARTITIONED BY DAY
+```
+
+**When tags is VARCHAR (not ARRAY):**
+
+```sql
+SELECT
+  TIME_PARSE("timestamp") AS "__time",
+  "label",
+  ARRAY_TO_MV(MV_TO_ARRAY("tags")) AS "tags",  -- Convert VARCHAR → ARRAY → VARCHAR
+  COUNT(*) AS "count"
+FROM "ext"
+GROUP BY 1, 2, MV_TO_ARRAY("tags")  -- Must group on array version
+PARTITIONED BY DAY
+```
+
+## Filtering
+
+Filters match a row if **any** value in the multi-value dimension satisfies the filter.
+
+### SQL Examples
+
+**Match any value:**
+
+```sql
+SELECT * FROM "mvd_example_rollup"
+WHERE tags = 't1' OR tags = 't3'
+```
+
+Result:
+
+```json
+{"__time":"2011-01-12T00:00:00.000Z","label":"row1","tags":"[\"t1\",\"t2\",\"t3\"]","count":1}
+{"__time":"2011-01-13T00:00:00.000Z","label":"row2","tags":"[\"t3\",\"t4\",\"t5\"]","count":1}
+```
+
+**NULL matching:**
+
+```sql
+SELECT * FROM "mvd_example_rollup"
+WHERE tags IS NULL
+```
+
+Result:
+
+```json
+{"__time":"2011-01-14T00:00:00.000Z","label":"row4","tags":null,"count":1}
+```
+
+### Native Query Examples
+
+**"Contradiction" that works in native but not SQL:**
+
+```json
+{
+  "type": "and",
+  "fields": [
+    {"type": "selector", "dimension": "tags", "value": "t1"},
+    {"type": "selector", "dimension": "tags", "value": "t3"}
+  ]
+}
+```
+
+This matches row1 `["t1","t2","t3"]` because it contains both t1 AND t3.
+
+<Note>
+To express this in SQL, use [multi-value string functions](sql-multivalue-string-functions) like `MV_CONTAINS`.
+</Note>
+
+## Grouping
+
+Grouping on multi-value dimensions causes implicit UNNEST - each value generates a separate group.
+
+### SQL Examples
+
+**Basic grouping:**
+
+```sql
+SELECT label, tags
+FROM "mvd_example_rollup"
+GROUP BY 1, 2
+```
+
+Result:
+
+```json
+{"label":"row1","tags":"t1"}
+{"label":"row1","tags":"t2"}
+{"label":"row1","tags":"t3"}
+{"label":"row2","tags":"t3"}
+{"label":"row2","tags":"t4"}
+{"label":"row2","tags":"t5"}
+{"label":"row3","tags":"t5"}
+{"label":"row3","tags":"t6"}
+{"label":"row3","tags":"t7"}
+{"label":"row4","tags":null}
+```
+
+**With filter:**
+
+```sql
+SELECT label, tags
+FROM "mvd_example_rollup"
+WHERE label IN ('row1', 'row2')
+GROUP BY 1, 2
+```
+
+Result:
+
+```json
+{"label":"row1","tags":"t1"}
+{"label":"row1","tags":"t2"}
+{"label":"row1","tags":"t3"}
+{"label":"row2","tags":"t3"}
+{"label":"row2","tags":"t4"}
+{"label":"row2","tags":"t5"}
+```
+
+<Note>
+The filter is applied BEFORE explosion. Row1 matches because it contains t1, then ALL its values (t1, t2, t3) are included in results.
+</Note>
+
+### Native GroupBy Query
+
+```json
+{
+  "queryType": "groupBy",
+  "dataSource": "test",
+  "intervals": ["1970-01-01T00:00:00.000Z/3000-01-01T00:00:00.000Z"],
+  "granularity": {"type": "all"},
+  "dimensions": [
+    {"type": "default", "dimension": "tags", "outputName": "tags"}
+  ],
+  "aggregations": [
+    {"type": "count", "name": "count"}
+  ]
+}
+```
+
+Result:
+
+```json
+[
+  {"timestamp": "1970-01-01T00:00:00.000Z", "event": {"count": 1, "tags": "t1"}},
+  {"timestamp": "1970-01-01T00:00:00.000Z", "event": {"count": 1, "tags": "t2"}},
+  {"timestamp": "1970-01-01T00:00:00.000Z", "event": {"count": 2, "tags": "t3"}},
+  {"timestamp": "1970-01-01T00:00:00.000Z", "event": {"count": 1, "tags": "t4"}},
+  {"timestamp": "1970-01-01T00:00:00.000Z", "event": {"count": 2, "tags": "t5"}},
+  {"timestamp": "1970-01-01T00:00:00.000Z", "event": {"count": 1, "tags": "t6"}},
+  {"timestamp": "1970-01-01T00:00:00.000Z", "event": {"count": 1, "tags": "t7"}}
+]
+```
+
+### Filtering Values During Grouping
+
+To include only specific values after filtering, use filtered dimensionSpecs:
+
+```json
+{
+  "queryType": "groupBy",
+  "dataSource": "test",
+  "intervals": ["1970-01-01T00:00:00.000Z/3000-01-01T00:00:00.000Z"],
+  "filter": {
+    "type": "selector",
+    "dimension": "tags",
+    "value": "t3"
+  },
+  "granularity": {"type": "all"},
+  "dimensions": [
+    {
+      "type": "listFiltered",
+      "delegate": {
+        "type": "default",
+        "dimension": "tags",
+        "outputName": "tags"
+      },
+      "values": ["t3"]
+    }
+  ],
+  "aggregations": [
+    {"type": "count", "name": "count"}
+  ]
+}
+```
+
+Result - only t3 values:
+
+```json
+[
+  {"timestamp": "1970-01-01T00:00:00.000Z", "event": {"count": 2, "tags": "t3"}}
+]
+```
+
+Alternatives:
+- SQL: [`MV_FILTER_ONLY`/`MV_FILTER_NONE`](sql-multivalue-string-functions)
+- Native: [Filtered virtual column](virtual-columns#list-filtered-virtual-column)
+
+## Disable GroupBy on Multi-Value Columns
+
+Set `groupByEnableMultiValueUnnesting: false` in [query context](query-context-reference) to make queries with multi-value dimensions fail instead of implicitly unnesting.
+
+Use this as a safety feature when you expect all dimensions to be single-valued.
+
+## Differences Between Arrays and Multi-Value Dimensions
+
+| Feature | Multi-Value Dimensions | Arrays |
+|---------|----------------------|--------|
+| Type | `VARCHAR` | `ARRAY<STRING>` or `ARRAY<LONG>` |
+| SQL Behavior | Implicit UNNEST on GROUP BY | Standard SQL array behavior |
+| Filtering | Any value matches | Array equality/containment |
+| Ingestion type | dimension type `string` (without `useSchemaDiscovery`) | dimension type `auto` or `useSchemaDiscovery` |
+| SQL Ingestion | `ARRAY_TO_MV(array)` | Native ARRAY values |
+| Contents | Strings only | Strings or numbers |
+
+**Check your column types:**
+
+```sql
+SELECT COLUMN_NAME, DATA_TYPE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_NAME = 'mytable'
+```
+
+- Arrays: `ARRAY`
+- Multi-value dimensions: `VARCHAR`
+
+<Tip>
+Use arrays whenever possible - they are newer, more powerful, and have SQL-compliant behavior.
+</Tip>
+
+**Convert between types:**
+
+- `MV_TO_ARRAY(varchar)` - Multi-value dimension → Array
+- `ARRAY_TO_MV(array)` - Array → Multi-value dimension
+
+## Related Documentation
+
+- [SQL Multi-Value String Functions](sql-multivalue-string-functions)
+- [Arrays](arrays)
+- [SQL Data Types](sql-data-types#multi-value-strings-behavior)
+- [Segments Documentation](../design/segments#multi-value-columns)

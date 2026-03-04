@@ -1,0 +1,367 @@
+---
+title: "Metrics"
+description: "Monitor Apache Druid with comprehensive metrics for query execution, ingestion, coordination, and system performance"
+---
+
+Druid emits a comprehensive set of metrics that are essential for monitoring query execution, ingestion, coordination, and overall cluster health. All metrics can be configured through the [metrics monitors configuration](/configuration#metrics-monitors).
+
+## Metric Structure
+
+All Druid metrics share a common set of fields:
+
+<ParamField path="timestamp" type="string">
+  The time the metric was created
+</ParamField>
+
+<ParamField path="metric" type="string">
+  The name of the metric
+</ParamField>
+
+<ParamField path="service" type="string">
+  The service name that emitted the metric (e.g., "druid/broker", "druid/historical")
+</ParamField>
+
+<ParamField path="host" type="string">
+  The host name that emitted the metric
+</ParamField>
+
+<ParamField path="value" type="number">
+  The numeric value associated with the metric
+</ParamField>
+
+<Info>
+Most metric values reset each emission period, as specified in `druid.monitoring.emissionPeriod`.
+</Info>
+
+## Query Metrics
+
+### Router Metrics
+
+<ResponseField name="query/time" type="gauge">
+  Milliseconds taken to complete a query.
+  
+  **Dimensions:** `dataSource`, `type`, `interval`, `hasFilters`, `duration`, `context`, `remoteAddress`, `id`, `statusCode`
+  
+  **Normal value:** < 1s
+</ResponseField>
+
+### Broker Metrics
+
+The Broker emits detailed metrics about query processing and result merging.
+
+<Accordion title="Core Broker Query Metrics">
+
+| Metric | Description | Normal Value |
+|--------|-------------|-------------|
+| `query/time` | Milliseconds taken to complete a query | < 1s |
+| `query/bytes` | Total bytes returned to client | Varies |
+| `query/node/time` | Milliseconds to query individual Historical/Realtime processes | < 1s |
+| `query/node/bytes` | Bytes returned from individual Historical/Realtime processes | Varies |
+| `query/node/ttfb` | Time to first byte from Historical/Realtime processes | < 1s |
+| `query/count` | Total number of queries | Varies |
+| `query/success/count` | Number of successful queries | Varies |
+| `query/failed/count` | Number of failed queries | Should be low |
+| `query/interrupted/count` | Number of cancelled queries | Should be low |
+| `query/timeout/count` | Number of timed out queries | Should be low |
+
+</Accordion>
+
+<Accordion title="SQL Query Metrics">
+
+```json
+{
+  "sqlQuery/time": {
+    "description": "Milliseconds taken to complete a SQL query",
+    "dimensions": ["id", "nativeQueryIds", "dataSource", "remoteAddress", "success", "engine", "statusCode"],
+    "normalValue": "< 1s"
+  },
+  "sqlQuery/planningTimeMs": {
+    "description": "Milliseconds taken to plan a SQL to native query",
+    "dimensions": ["id", "nativeQueryIds", "dataSource", "remoteAddress", "success", "engine"]
+  },
+  "sqlQuery/bytes": {
+    "description": "Number of bytes returned in the SQL query response",
+    "dimensions": ["id", "nativeQueryIds", "dataSource", "remoteAddress", "success", "engine"]
+  }
+}
+```
+
+</Accordion>
+
+<Accordion title="Cache Metrics">
+
+| Metric | Description |
+|--------|-------------|
+| `query/cache/delta/*` | Cache metrics since the last emission |
+| `query/cache/total/*` | Total cache metrics |
+| `*/numEntries` | Number of cache entries |
+| `*/sizeBytes` | Size in bytes of cache entries |
+| `*/hits` | Number of cache hits |
+| `*/misses` | Number of cache misses |
+| `*/evictions` | Number of cache evictions |
+| `*/hitRate` | Cache hit rate (normal: ~40%) |
+| `*/errors` | Number of cache errors (should be 0) |
+
+</Accordion>
+
+### Historical Metrics
+
+<CodeGroup>
+```bash Key Query Metrics
+# Segment query time
+query/segment/time         # Time to query individual segment
+query/wait/time           # Time waiting for segment scan
+segment/scan/pending      # Segments waiting to be scanned
+segment/scan/active       # Segments currently being scanned
+```
+
+```bash Resource Metrics
+# Processing resources
+query/cpu/time            # CPU time for query execution
+mergeBuffer/pendingRequests  # Requests waiting for merge buffers
+mergeBuffer/used          # Merge buffers currently in use
+```
+</CodeGroup>
+
+<Warning>
+If `segment/scan/pending` is consistently high, you may need to increase `druid.processing.numThreads` or add more Historicals.
+</Warning>
+
+## Ingestion Metrics
+
+### General Native Ingestion
+
+<Tabs>
+  <Tab title="Core Metrics">
+    | Metric | Description | Dimensions |
+    |--------|-------------|------------|
+    | `ingest/count` | Count of ingestion jobs | `dataSource`, `taskId`, `taskType`, `taskIngestionMode` |
+    | `ingest/segments/count` | Final segments created | `dataSource`, `taskId`, `taskType` |
+    | `ingest/tombstones/count` | Tombstones created | `dataSource`, `taskId`, `taskType` |
+    | `ingest/events/processed` | Events processed per emission | `dataSource`, `taskId`, `taskType` |
+    | `ingest/events/unparseable` | Unparseable events rejected | `dataSource`, `taskId`, `taskType` |
+  </Tab>
+  
+  <Tab title="Kafka Ingestion">
+    | Metric | Description | Normal Value |
+    |--------|-------------|-------------|
+    | `ingest/kafka/lag` | Total lag across all partitions | > 0, not too high |
+    | `ingest/kafka/maxLag` | Max lag across partitions | > 0, not too high |
+    | `ingest/kafka/avgLag` | Average lag across partitions | > 0, not too high |
+    | `ingest/kafka/partitionLag` | Per-partition lag | > 0, not too high |
+  </Tab>
+  
+  <Tab title="Kinesis Ingestion">
+    | Metric | Description | Normal Value |
+    |--------|-------------|-------------|
+    | `ingest/kinesis/lag/time` | Total lag time across shards | > 0, up to retention |
+    | `ingest/kinesis/maxLag/time` | Max lag time | > 0, up to retention |
+    | `ingest/kinesis/avgLag/time` | Average lag time | > 0, up to retention |
+  </Tab>
+</Tabs>
+
+### Ingestion Performance Metrics
+
+```properties
+# Persistence metrics
+ingest/persists/count       # Number of persist operations
+ingest/persists/time        # Time spent on persist
+ingest/persists/backPressure # Time blocked on persist
+
+# Handoff metrics
+ingest/handoff/count        # Successful handoffs
+ingest/handoff/failed       # Failed handoffs (should be 0)
+ingest/handoff/time         # Time to complete handoff
+
+# Processing metrics
+ingest/merge/time           # Time merging segments
+ingest/rows/output          # Druid rows persisted
+```
+
+<Check>
+**Healthy Ingestion Indicators:**
+- `ingest/persists/backPressure` is 0 or very low
+- `ingest/handoff/failed` is 0
+- `ingest/events/unparseable` is 0 or minimal
+</Check>
+
+## Coordination Metrics
+
+### Coordinator Metrics
+
+<ResponseField name="segment/assigned/count" type="counter">
+  Number of segments assigned to be loaded in the cluster.
+  
+  **Dimensions:** `dataSource`, `tier`
+</ResponseField>
+
+<ResponseField name="segment/moved/count" type="counter">
+  Number of segments moved in the cluster.
+  
+  **Dimensions:** `dataSource`, `tier`
+</ResponseField>
+
+<ResponseField name="segment/dropped/count" type="counter">
+  Number of segments dropped due to being over-replicated.
+  
+  **Dimensions:** `dataSource`, `tier`
+</ResponseField>
+
+<ResponseField name="segment/deleted/count" type="counter">
+  Number of segments marked as unused due to drop rules.
+  
+  **Dimensions:** `dataSource`
+</ResponseField>
+
+### Indexing Service Metrics
+
+<CardGroup cols={2}>
+  <Card title="Task Metrics" icon="list-check">
+    - `task/run/time`: Task execution time
+    - `task/pending/time`: Time waiting to start
+    - `task/waiting/time`: Time waiting for scheduling
+    - `task/success/count`: Successful tasks
+    - `task/failed/count`: Failed tasks
+  </Card>
+  
+  <Card title="Slot Metrics" icon="table-cells">
+    - `taskSlot/total/count`: Total task slots
+    - `taskSlot/idle/count`: Available slots
+    - `taskSlot/used/count`: Busy slots
+    - `taskSlot/blacklisted/count`: Blacklisted slots
+  </Card>
+</CardGroup>
+
+## System Metrics
+
+### JVM Metrics
+
+Monitor JVM health with these critical metrics:
+
+<Accordion title="Memory Metrics">
+```bash
+# Heap memory
+jvm/mem/heap/used          # Heap memory in use
+jvm/mem/heap/committed     # Committed heap memory
+jvm/mem/heap/max           # Maximum heap memory
+
+# Non-heap memory
+jvm/mem/nonheap/used       # Non-heap memory in use
+jvm/mem/nonheap/committed  # Committed non-heap memory
+
+# Pools
+jvm/pool/*/used            # Memory pool usage
+jvm/pool/*/max             # Memory pool maximum
+```
+</Accordion>
+
+<Accordion title="Garbage Collection">
+```bash
+jvm/gc/count               # GC collection count
+jvm/gc/time                # Time spent in GC
+jvm/gc/cpu                 # CPU time spent in GC
+```
+
+<Warning>
+If `jvm/gc/time` is consistently high (> 10% of total time), investigate heap sizing and GC tuning.
+</Warning>
+</Accordion>
+
+### Jetty Server Metrics
+
+| Metric | Description | Normal Value |
+|--------|-------------|-------------|
+| `jetty/numOpenConnections` | Open connections | Not much higher than thread count |
+| `jetty/threadPool/utilized` | Threads in use | < `jetty/threadPool/ready` |
+| `jetty/threadPool/utilizationRate` | Thread pool utilization | 0.0 - 1.0 |
+| `jetty/threadPool/idle` | Idle threads | > 0 means spare capacity |
+| `jetty/threadPool/queueSize` | Queued requests | Should be low |
+
+<Tip>
+A `jetty/threadPool/utilizationRate` consistently near 1.0 indicates you should increase `druid.server.http.numThreads`.
+</Tip>
+
+## Monitoring Configuration
+
+Enable specific monitors by configuring `druid.monitoring.monitors` in `common.runtime.properties`:
+
+```properties
+# Common monitors
+druid.monitoring.monitors=["org.apache.druid.java.util.metrics.JvmMonitor","org.apache.druid.java.util.metrics.SysMonitor"]
+
+# Query metrics
+druid.monitoring.monitors=["org.apache.druid.client.cache.CacheMonitor","org.apache.druid.server.metrics.QueryCountStatsMonitor"]
+
+# Emission period (default: PT1M)
+druid.monitoring.emissionPeriod=PT1M
+```
+
+<CardGroup cols={2}>
+  <Card title="JvmMonitor" icon="java">
+    JVM memory, GC, and buffer pool metrics
+  </Card>
+  <Card title="SysMonitor" icon="server">
+    CPU, disk, network, and memory system metrics
+  </Card>
+  <Card title="QueryCountStatsMonitor" icon="magnifying-glass-chart">
+    Query success, failure, and timeout counts
+  </Card>
+  <Card title="CacheMonitor" icon="box-archive">
+    Cache hit/miss rates and performance
+  </Card>
+</CardGroup>
+
+## Metrics Export
+
+Druid can emit metrics to various monitoring systems:
+
+<Tabs>
+  <Tab title="Prometheus">
+    ```properties
+    # Load Prometheus emitter extension
+    druid.extensions.loadList=["prometheus-emitter"]
+    
+    # Configure emitter
+    druid.emitter=prometheus
+    druid.emitter.prometheus.strategy=exporter
+    druid.emitter.prometheus.port=8000
+    ```
+  </Tab>
+  
+  <Tab title="Graphite">
+    ```properties
+    # Load Graphite emitter extension
+    druid.extensions.loadList=["graphite-emitter"]
+    
+    # Configure emitter
+    druid.emitter=graphite
+    druid.emitter.graphite.hostname=graphite.example.com
+    druid.emitter.graphite.port=2003
+    ```
+  </Tab>
+  
+  <Tab title="HTTP">
+    ```properties
+    # Configure HTTP emitter
+    druid.emitter=http
+    druid.emitter.http.recipientBaseUrl=http://metrics.example.com/druid
+    ```
+  </Tab>
+</Tabs>
+
+## Best Practices
+
+<Steps>
+  <Step title="Start with Core Metrics">
+    Monitor query time, ingestion lag, and task success rates first
+  </Step>
+  <Step title="Set Up Alerting">
+    Create alerts for failed tasks, high query times, and ingestion lag
+  </Step>
+  <Step title="Track Trends">
+    Monitor metric trends over time to identify performance degradation
+  </Step>
+  <Step title="Correlate Metrics">
+    Look at multiple metrics together (e.g., query time + JVM GC time)
+  </Step>
+</Steps>

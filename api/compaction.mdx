@@ -1,0 +1,321 @@
+---
+title: "Automatic Compaction API"
+description: "HTTP API for configuring automatic compaction in Apache Druid"
+---
+
+The Automatic Compaction API allows you to configure and monitor automatic compaction using Coordinator duties in Apache Druid.
+
+<Note>
+You can also use compaction supervisors (experimental) instead of Coordinator-based compaction.
+</Note>
+
+## Manage automatic compaction
+
+### Create or update compaction configuration
+
+Creates or updates automatic compaction configuration for a datasource. Only the `dataSource` property is required; Druid fills other properties with default values.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/coordinator/v1/config/compaction" \
+--header 'Content-Type: application/json' \
+--data '{
+    "dataSource": "wikipedia_hour",
+    "skipOffsetFromLatest": "PT0S",
+    "tuningConfig": {
+        "partitionsSpec": {
+            "type": "dynamic"
+        },
+        "type": "index_parallel"
+    },
+    "granularitySpec": {
+        "segmentGranularity": "DAY"
+    }
+}'
+```
+
+```http HTTP
+POST /druid/coordinator/v1/config/compaction HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+Content-Type: application/json
+
+{
+    "dataSource": "wikipedia_hour",
+    "skipOffsetFromLatest": "PT0S",
+    "tuningConfig": {
+        "partitionsSpec": {
+            "type": "dynamic"
+        },
+        "type": "index_parallel"
+    },
+    "granularitySpec": {
+        "segmentGranularity": "DAY"
+    }
+}
+```
+</CodeGroup>
+
+<ParamField body="dataSource" type="string" required>
+  Name of the datasource to configure compaction for.
+</ParamField>
+
+<ParamField body="skipOffsetFromLatest" type="string">
+  ISO-8601 duration. Skip segments within this time from the latest segment.
+</ParamField>
+
+<ParamField body="tuningConfig" type="object">
+  Tuning configuration for compaction tasks including partitioning strategy.
+</ParamField>
+
+<ParamField body="granularitySpec" type="object">
+  Granularity specification including `segmentGranularity` for compacted segments.
+</ParamField>
+
+<ResponseExample>
+```json 200 Success
+{}
+```
+</ResponseExample>
+
+### Remove compaction configuration
+
+Removes automatic compaction configuration for a datasource.
+
+<CodeGroup>
+```bash cURL
+curl --request DELETE \
+  "http://ROUTER_IP:ROUTER_PORT/druid/coordinator/v1/config/compaction/wikipedia_hour"
+```
+
+```http HTTP
+DELETE /druid/coordinator/v1/config/compaction/wikipedia_hour HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="dataSource" type="string" required>
+  Name of the datasource.
+</ParamField>
+
+<ResponseExample>
+```json 200 Success
+{}
+```
+</ResponseExample>
+
+## View compaction configuration
+
+### Get all compaction configurations
+
+Retrieves all automatic compaction configurations and cluster-level settings.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/coordinator/v1/config/compaction"
+```
+
+```http HTTP
+GET /druid/coordinator/v1/config/compaction HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ResponseField name="compactionConfigs" type="array">
+  Array of compaction configurations for all datasources.
+</ResponseField>
+
+<ResponseField name="compactionTaskSlotRatio" type="number">
+  Ratio of task slots allocated to compaction tasks (default: 0.1).
+</ResponseField>
+
+<ResponseField name="maxCompactionTaskSlots" type="integer">
+  Maximum number of task slots for compaction (default: 2147483647).
+</ResponseField>
+
+### Get compaction configuration for a datasource
+
+Retrieves the automatic compaction configuration for a specific datasource.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/coordinator/v1/config/compaction/wikipedia_hour"
+```
+
+```http HTTP
+GET /druid/coordinator/v1/config/compaction/wikipedia_hour HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="dataSource" type="string" required>
+  Name of the datasource.
+</ParamField>
+
+<ResponseExample>
+```json Compaction Config Response
+{
+    "dataSource": "wikipedia_hour",
+    "taskPriority": 25,
+    "inputSegmentSizeBytes": 100000000000000,
+    "skipOffsetFromLatest": "PT0S",
+    "tuningConfig": {
+        "partitionsSpec": {
+            "type": "dynamic",
+            "maxRowsPerSegment": 5000000
+        },
+        "type": "index_parallel"
+    },
+    "granularitySpec": {
+        "segmentGranularity": "DAY"
+    }
+}
+```
+</ResponseExample>
+
+### Get compaction configuration history
+
+Retrieves the history of compaction configuration changes for a datasource.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/coordinator/v1/config/compaction/wikipedia_hour/history"
+```
+
+```http HTTP
+GET /druid/coordinator/v1/config/compaction/wikipedia_hour/history HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="dataSource" type="string" required>
+  Name of the datasource.
+</ParamField>
+
+<ParamField query="interval" type="string">
+  ISO-8601 interval to filter results (e.g., `2023-01-01/2023-12-31`).
+</ParamField>
+
+<ParamField query="count" type="integer">
+  Limit the number of history entries returned.
+</ParamField>
+
+<ResponseField name="globalConfig" type="object">
+  Cluster-level compaction configuration at the time of change.
+</ResponseField>
+
+<ResponseField name="compactionConfig" type="object">
+  Datasource compaction configuration.
+</ResponseField>
+
+<ResponseField name="auditInfo" type="object">
+  Information about who made the change.
+</ResponseField>
+
+<ResponseField name="auditTime" type="string">
+  ISO-8601 timestamp of the change.
+</ResponseField>
+
+## View compaction status
+
+### Get segments awaiting compaction
+
+Returns the total size of segments awaiting compaction for a datasource.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/coordinator/v1/compaction/progress?dataSource=wikipedia_hour"
+```
+
+```http HTTP
+GET /druid/coordinator/v1/compaction/progress?dataSource=wikipedia_hour HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField query="dataSource" type="string" required>
+  Name of the datasource.
+</ParamField>
+
+<ResponseExample>
+```json Progress Response
+{
+    "remainingSegmentSize": 7615837
+}
+```
+</ResponseExample>
+
+### Get compaction status and statistics
+
+Retrieves status and statistics from the latest automatic compaction run for all datasources.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/coordinator/v1/compaction/status"
+```
+
+```http HTTP
+GET /druid/coordinator/v1/compaction/status HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField query="dataSource" type="string">
+  Filter results by datasource name.
+</ParamField>
+
+<ResponseField name="latestStatus" type="array">
+  Array of status objects for each datasource.
+</ResponseField>
+
+<ResponseField name="dataSource" type="string">
+  Name of the datasource.
+</ResponseField>
+
+<ResponseField name="scheduleStatus" type="string">
+  Compaction scheduling status: NOT_ENABLED or RUNNING.
+</ResponseField>
+
+<ResponseField name="bytesAwaitingCompaction" type="integer">
+  Total bytes waiting to be compacted.
+</ResponseField>
+
+<ResponseField name="bytesCompacted" type="integer">
+  Total bytes already compacted.
+</ResponseField>
+
+<ResponseField name="bytesSkipped" type="integer">
+  Total bytes skipped (not eligible for compaction).
+</ResponseField>
+
+<ResponseField name="segmentCountAwaitingCompaction" type="integer">
+  Number of segments waiting to be compacted.
+</ResponseField>
+
+<ResponseExample>
+```json Compaction Status Response
+{
+    "latestStatus": [
+        {
+            "dataSource": "wikipedia_api",
+            "scheduleStatus": "RUNNING",
+            "bytesAwaitingCompaction": 0,
+            "bytesCompacted": 0,
+            "bytesSkipped": 64133616,
+            "segmentCountAwaitingCompaction": 0,
+            "segmentCountCompacted": 0,
+            "segmentCountSkipped": 8
+        },
+        {
+            "dataSource": "wikipedia_hour",
+            "scheduleStatus": "RUNNING",
+            "bytesAwaitingCompaction": 0,
+            "bytesCompacted": 5998634,
+            "bytesSkipped": 0,
+            "segmentCountAwaitingCompaction": 0,
+            "segmentCountCompacted": 1,
+            "segmentCountSkipped": 0
+        }
+    ]
+}
+```
+</ResponseExample>

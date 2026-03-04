@@ -1,0 +1,71 @@
+---
+title: "API Reference Overview"
+description: "Complete reference for Apache Druid HTTP and Java APIs"
+---
+
+This is the API reference for Apache Druid. Druid provides comprehensive REST APIs for querying, ingestion, data management, and cluster monitoring.
+
+## HTTP APIs
+
+Druid exposes HTTP APIs for various operations:
+
+### Query APIs
+
+- **[Druid SQL API](sql-api)**: Submit SQL queries using the Druid SQL API with support for multiple result formats
+- **[JSON Querying API](json-querying)**: Submit JSON-based native queries for timeseries, topN, groupBy, and other query types
+- **[SQL-based Ingestion API](sql-ingestion)**: Submit SQL-based batch ingestion requests using the multi-stage query engine
+
+### Data Ingestion and Management
+
+- **[Tasks API](tasks)**: Manage data ingestion operations including task submission, monitoring, and cancellation
+- **[Supervisors API](supervisor)**: Manage supervisors for streaming data ingestion from Kafka and Kinesis
+- **[Data Management API](data-management)**: Manage data segments including marking segments as used/unused and deletion
+- **[Retention Rules API](retention-rules)**: Define and manage data retention rules across datasources
+- **[Automatic Compaction API](compaction)**: Configure automatic compaction to optimize segment sizes after ingestion
+
+### Cluster Monitoring
+
+- **[Service Status API](service-status)**: Monitor Druid cluster components including Coordinator, Overlord, Broker, Historical, and MiddleManager services
+
+## Java APIs
+
+- **[SQL JDBC Driver](sql-jdbc)**: Connect to Druid and execute SQL queries using the Avatica JDBC driver
+
+## API Conventions
+
+All API examples in this documentation use `http://ROUTER_IP:ROUTER_PORT` as a placeholder for your Router service address and port. Replace this with your actual deployment information:
+
+- **Quickstart deployments**: `http://localhost:8888`
+- **Production deployments**: Use your Router's hostname and port
+
+### Common Response Codes
+
+| Code | Description |
+|------|-------------|
+| 200 | Success |
+| 400 | Bad Request - Invalid parameters or request body |
+| 404 | Not Found - Resource does not exist |
+| 500 | Internal Server Error |
+| 503 | Service Unavailable |
+
+### Authentication
+
+If your Druid deployment uses authentication, you'll need to include appropriate credentials with your API requests. Refer to the [security documentation](https://druid.apache.org/docs/latest/operations/security-overview) for details on configuring authentication.
+
+## Getting Started
+
+For beginners, we recommend starting with:
+
+1. **[SQL API](sql-api)** - The most user-friendly way to query Druid
+2. **[Service Status API](service-status)** - Monitor your cluster health
+3. **[Tasks API](tasks)** - Manage ingestion tasks
+
+## API Reference Structure
+
+Each API reference page includes:
+
+- **Endpoint descriptions**: HTTP method, URL path, and purpose
+- **Request parameters**: Query parameters and request body schemas
+- **Response formats**: Success and error response structures
+- **Code examples**: cURL and HTTP examples for each endpoint
+- **Sample responses**: Real response payloads to help you understand the data structure

@@ -1,0 +1,315 @@
+---
+title: "Retention Rules API"
+description: "HTTP API for managing retention rules in Apache Druid"
+---
+
+The Retention Rules API allows you to define and manage data retention rules across datasources in Apache Druid. Retention rules determine what data is retained in the cluster through load, drop, and broadcast rules.
+
+## Update retention rules for a datasource
+
+Updates one or more retention rules for a datasource. This request overwrites any existing rules.
+
+<Warning>
+Rules are read in order. The first matching rule is applied to a segment.
+</Warning>
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/coordinator/v1/rules/kttm1" \
+--header 'X-Druid-Author: doc intern' \
+--header 'X-Druid-Comment: submitted via api' \
+--header 'Content-Type: application/json' \
+--data '[
+    {
+        "type": "broadcastForever"
+    },
+    {
+        "type": "loadForever",
+        "tieredReplicants": {
+            "_default_tier": 2
+        },
+        "useDefaultTierForNull": true
+    },
+    {
+        "type": "dropByPeriod",
+        "period": "P1M"
+    }
+]'
+```
+
+```http HTTP
+POST /druid/coordinator/v1/rules/kttm1 HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+X-Druid-Author: doc intern
+X-Druid-Comment: submitted via api
+Content-Type: application/json
+
+[
+    {
+        "type": "broadcastForever"
+    },
+    {
+        "type": "loadForever",
+        "tieredReplicants": {
+            "_default_tier": 2
+        },
+        "useDefaultTierForNull": true
+    },
+    {
+        "type": "dropByPeriod",
+        "period": "P1M"
+    }
+]
+```
+</CodeGroup>
+
+<ParamField path="dataSource" type="string" required>
+  Name of the datasource.
+</ParamField>
+
+<ParamField header="X-Druid-Author" type="string">
+  Author of the configuration change for audit history.
+</ParamField>
+
+<ParamField header="X-Druid-Comment" type="string">
+  Description of the update for audit history.
+</ParamField>
+
+<ParamField body="rules" type="array" required>
+  Array of retention rule objects. Each rule must have a `type` field.
+</ParamField>
+
+<ResponseExample>
+```json 200 Success
+{}
+```
+</ResponseExample>
+
+## Update default retention rules
+
+Updates default retention rules that apply to all datasources. Submit an empty array to remove all default rules.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/coordinator/v1/rules/_default" \
+--header 'Content-Type: application/json' \
+--data '[
+    {
+        "type": "loadByInterval",
+        "tieredReplicants": {},
+        "useDefaultTierForNull": false,
+        "interval": "2010-01-01/2020-01-01"
+    }
+]'
+```
+
+```http HTTP
+POST /druid/coordinator/v1/rules/_default HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+Content-Type: application/json
+
+[
+    {
+        "type": "loadByInterval",
+        "tieredReplicants": {},
+        "useDefaultTierForNull": false,
+        "interval": "2010-01-01/2020-01-01"
+    }
+]
+```
+</CodeGroup>
+
+<ParamField header="X-Druid-Author" type="string">
+  Author of the configuration change.
+</ParamField>
+
+<ParamField header="X-Druid-Comment" type="string">
+  Description of the update.
+</ParamField>
+
+<ParamField body="rules" type="array" required>
+  Array of default retention rule objects.
+</ParamField>
+
+<ResponseExample>
+```json 200 Success
+{}
+```
+</ResponseExample>
+
+## Get all retention rules
+
+Retrieves all current retention rules in the cluster including the default rule.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/coordinator/v1/rules"
+```
+
+```http HTTP
+GET /druid/coordinator/v1/rules HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ResponseExample>
+```json All Rules Response
+{
+    "_default": [
+        {
+            "tieredReplicants": {
+                "_default_tier": 2
+            },
+            "type": "loadForever"
+        }
+    ],
+    "social_media": [
+        {
+            "interval": "2023-01-01T00:00:00.000Z/2023-02-01T00:00:00.000Z",
+            "type": "dropByInterval"
+        }
+    ],
+    "wikipedia_api": []
+}
+```
+</ResponseExample>
+
+## Get retention rules for a datasource
+
+Retrieves retention rules for a single datasource.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/coordinator/v1/rules/social_media?full=null"
+```
+
+```http HTTP
+GET /druid/coordinator/v1/rules/social_media?full=null HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="dataSource" type="string" required>
+  Name of the datasource.
+</ParamField>
+
+<ParamField query="full" type="boolean">
+  Include default retention rules in the response.
+</ParamField>
+
+<ResponseExample>
+```json Datasource Rules Response
+[
+    {
+        "interval": "2020-01-01T00:00:00.000Z/2022-02-01T00:00:00.000Z",
+        "type": "dropByInterval"
+    },
+    {
+        "interval": "2010-01-01T00:00:00.000Z/2020-01-01T00:00:00.000Z",
+        "tieredReplicants": {
+            "_default_tier": 2
+        },
+        "type": "loadByInterval"
+    },
+    {
+        "tieredReplicants": {
+            "_default_tier": 2
+        },
+        "type": "loadForever"
+    }
+]
+```
+</ResponseExample>
+
+## Get audit history for all datasources
+
+Retrieves the audit history of rules for all datasources over a time period.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/coordinator/v1/rules/history?interval=2023-07-13%2F2023-07-19"
+```
+
+```http HTTP
+GET /druid/coordinator/v1/rules/history?interval=2023-07-13/2023-07-19 HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField query="interval" type="string">
+  ISO-8601 time interval delimited by `/` (e.g., `2023-07-13/2023-07-19`).
+</ParamField>
+
+<ParamField query="count" type="integer">
+  Limit the number of results to the last N entries.
+</ParamField>
+
+<ResponseField name="key" type="string">
+  Datasource name.
+</ResponseField>
+
+<ResponseField name="type" type="string">
+  Type of audit entry (typically "rules").
+</ResponseField>
+
+<ResponseField name="auditInfo" type="object">
+  Information about who made the change including author, comment, and IP address.
+</ResponseField>
+
+<ResponseField name="payload" type="string">
+  JSON string representation of the rules configuration.
+</ResponseField>
+
+<ResponseField name="auditTime" type="string">
+  ISO-8601 timestamp when the change was made.
+</ResponseField>
+
+<ResponseExample>
+```json Audit History Response
+[
+    {
+        "key": "social_media",
+        "type": "rules",
+        "auditInfo": {
+            "author": "console",
+            "comment": "test",
+            "ip": "127.0.0.1"
+        },
+        "payload": "[{\"interval\":\"2023-01-01T00:00:00.000Z/2023-02-01T00:00:00.000Z\",\"type\":\"dropByInterval\"}]",
+        "auditTime": "2023-07-13T18:05:33.066Z"
+    },
+    {
+        "key": "wikipedia_api",
+        "type": "rules",
+        "auditInfo": {
+            "author": "console",
+            "comment": "test",
+            "ip": "127.0.0.1"
+        },
+        "payload": "[{\"tieredReplicants\":{\"_default_tier\":2},\"type\":\"loadForever\"}]",
+        "auditTime": "2023-07-18T18:10:44.519Z"
+    }
+]
+```
+</ResponseExample>
+
+## Common rule types
+
+### Load rules
+
+- `loadForever`: Load all segments forever
+- `loadByInterval`: Load segments within a specific interval
+- `loadByPeriod`: Load segments within a recent time period
+
+### Drop rules
+
+- `dropForever`: Drop all segments (mark as unused)
+- `dropByInterval`: Drop segments within a specific interval
+- `dropByPeriod`: Drop segments older than a time period
+- `dropBeforeByPeriod`: Drop segments before a time period from now
+
+### Broadcast rules
+
+- `broadcastForever`: Broadcast all segments to all servers
+- `broadcastByInterval`: Broadcast segments within an interval
+- `broadcastByPeriod`: Broadcast recent segments by period

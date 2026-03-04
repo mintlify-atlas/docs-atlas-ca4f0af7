@@ -1,0 +1,447 @@
+---
+title: Data Retention Rules
+description: Configure Apache Druid retention rules to automatically manage data lifecycle with load, drop, and broadcast rules for controlling which data to retain.
+---
+
+Data retention rules allow you to configure Apache Druid to conform to your data retention policies. Retention rules specify which data to retain and which data to drop from the cluster.
+
+## Overview
+
+Retention rules control the lifecycle of segments in your Druid cluster:
+- **Load rules**: Define which segments to keep on Historical servers and how many replicas
+- **Drop rules**: Mark segments as unused based on time periods or intervals  
+- **Broadcast rules**: Load segments onto Broker nodes (for testing only)
+
+<Note>
+Retention rules are persistent and stored in Druid's metadata store. They remain in effect until you change them.
+</Note>
+
+## Rule Types
+
+You can specify data retention in three ways:
+
+- **Forever**: All data in the segment
+- **Period**: Segment data specified as an offset from the present time
+- **Interval**: A fixed time range
+
+## Setting Retention Rules
+
+### Using the Web Console
+
+<Steps>
+  <Step title="Navigate to Datasources">
+    Click **Datasources** in the top-level navigation of the web console.
+  </Step>
+  
+  <Step title="Edit Retention Rules">
+    Click the datasource name, then select **Actions > Edit retention rules**.
+  </Step>
+  
+  <Step title="Create New Rule">
+    Click **+New rule** and select a rule type.
+  </Step>
+  
+  <Step title="Configure Rule Properties">
+    Set properties for the rule based on the rule type you selected.
+  </Step>
+  
+  <Step title="Save and Apply">
+    Click **Next**, enter a description, and click **Save** to apply the rule.
+  </Step>
+</Steps>
+
+### Using the Coordinator API
+
+Set default rules for all datasources:
+
+```bash
+curl --location --request POST 'http://localhost:8081/druid/coordinator/v1/rules/_default' \
+--header 'Content-Type: application/json' \
+--data-raw '[{
+  "type": "loadForever",
+  "tieredReplicants": {
+    "_default_tier": 2
+  }
+}]'
+```
+
+Set rules for a specific datasource:
+
+```bash
+curl --location --request POST 'http://localhost:8081/druid/coordinator/v1/rules/wikipedia' \
+--header 'Content-Type: application/json' \
+--data-raw '[{
+  "type": "loadByPeriod",
+  "period": "P30D",
+  "tieredReplicants": {
+    "hot": 2,
+    "_default_tier": 1
+  }
+},
+{
+  "type": "dropBeforeByPeriod",
+  "period": "P90D"
+}]'
+```
+
+<Warning>
+You must pass the entire array of rules with each API request. Each POST request overwrites existing rules for the specified datasource.
+</Warning>
+
+## Rule Structure and Order
+
+Rule order is critical. The Coordinator:
+1. Reads rules in the order they appear
+2. Cycles through all used segments
+3. Matches each segment with the first applicable rule
+4. Each segment can only match a single rule
+
+**Example rule evaluation order**:
+```
+Rule 1: Load last 7 days to hot tier
+Rule 2: Load last 30 days to default tier  
+Rule 3: Drop everything else
+```
+
+<Note>
+In the web console, use the up and down arrows to reorder rules.
+</Note>
+
+## Load Rules
+
+Load rules define how Druid assigns segments to Historical process tiers and set replica counts.
+
+### Forever Load Rule
+
+Assigns all datasource segments to specified tiers:
+
+```json
+{
+  "type": "loadForever",
+  "tieredReplicants": {
+    "hot": 1,
+    "_default_tier": 1
+  }
+}
+```
+
+**Properties**:
+- `tieredReplicants`: Map of tier names to number of replicas (0 or positive integer)
+- `useDefaultTierForNull`: Determines default value if `tieredReplicants` is null (default: `true`)
+
+### Period Load Rule
+
+Assigns segment data in a specific period to a tier:
+
+```json
+{
+  "type": "loadByPeriod",
+  "period": "P1M",
+  "includeFuture": true,
+  "tieredReplicants": {
+    "hot": 1,
+    "_default_tier": 1
+  }
+}
+```
+
+**Properties**:
+- `period`: ISO 8601 period from past to present (or future if `includeFuture` is true)
+- `includeFuture`: Match segments that start after the rule interval starts (default: `true`)
+- `tieredReplicants`: Map of tier names to replica counts
+
+### Interval Load Rule
+
+Assigns a specific time range to a tier:
+
+```json
+{
+  "type": "loadByInterval",
+  "interval": "2023-01-01/2023-12-31",
+  "tieredReplicants": {
+    "hot": 1,
+    "_default_tier": 1
+  }
+}
+```
+
+**Properties**:
+- `interval`: ISO 8601 time range encoded as a string
+- `tieredReplicants`: Map of tier names to replica counts
+
+### Query from Deep Storage
+
+Configure segments to be queryable from deep storage without loading to Historicals:
+
+```json
+{
+  "type": "loadByPeriod",
+  "period": "P90D",
+  "tieredReplicants": {},
+  "useDefaultTierForNull": false
+}
+```
+
+<Note>
+Setting `tieredReplicants` to an empty object and `useDefaultTierForNull` to false allows queries from deep storage without Historical tier loading.
+</Note>
+
+## Drop Rules
+
+Drop rules mark segments as unused, removing them from the cluster. Data remains in deep storage unless you run a kill task.
+
+<Warning>
+If you use a load rule to retain only recent data, you must also define a drop rule. Otherwise, Druid retains older data according to the default `loadForever` rule.
+</Warning>
+
+### Forever Drop Rule
+
+Drops all segment data from the cluster:
+
+```json
+{
+  "type": "dropForever"
+}
+```
+
+Usually the last rule in a set to drop any remaining segments.
+
+### Period Drop Rule
+
+Drops segments within a specific period (drops recent data):
+
+```json
+{
+  "type": "dropByPeriod",
+  "period": "P7D",
+  "includeFuture": true
+}
+```
+
+**Properties**:
+- `period`: ISO 8601 period from past to present/future
+- `includeFuture`: Match segments starting after the rule interval (default: `true`)
+
+### Period Drop Before Rule
+
+Drops segments before a specific period (drops old data):
+
+```json
+{
+  "type": "dropBeforeByPeriod",
+  "period": "P90D"
+}
+```
+
+**Properties**:
+- `period`: ISO 8601 period
+
+<Note>
+The rule combination `dropBeforeByPeriod` + `loadForever` is equivalent to `loadByPeriod(includeFuture = true)` + `dropForever`.
+</Note>
+
+### Interval Drop Rule
+
+Drops segments in a specific time range:
+
+```json
+{
+  "type": "dropByInterval",
+  "interval": "2020-01-01/2021-01-01"
+}
+```
+
+**Properties**:
+- `interval`: ISO 8601 time range
+
+## Broadcast Rules
+
+<Warning>
+Broadcast rules load segments onto all Brokers in the cluster. Use only in test environments, not production.
+</Warning>
+
+Requires `druid.segmentCache.locations` configured on both Brokers and Historicals.
+
+### Forever Broadcast Rule
+
+```json
+{
+  "type": "broadcastForever"
+}
+```
+
+### Period Broadcast Rule
+
+```json
+{
+  "type": "broadcastByPeriod",
+  "period": "P1M",
+  "includeFuture": true
+}
+```
+
+### Interval Broadcast Rule
+
+```json
+{
+  "type": "broadcastByInterval",
+  "interval": "2023-01-01/2024-01-01"
+}
+```
+
+## Common Retention Patterns
+
+### Hot-Warm-Cold Architecture
+
+Keep recent data hot, older data warm, archive oldest:
+
+```json
+[
+  {
+    "type": "loadByPeriod",
+    "period": "P7D",
+    "tieredReplicants": {"hot": 2}
+  },
+  {
+    "type": "loadByPeriod",
+    "period": "P30D",
+    "tieredReplicants": {"warm": 1}
+  },
+  {
+    "type": "loadByPeriod",
+    "period": "P90D",
+    "tieredReplicants": {},
+    "useDefaultTierForNull": false
+  },
+  {
+    "type": "dropForever"
+  }
+]
+```
+
+### Retain Last N Days
+
+Keep only the last 30 days of data:
+
+```json
+[
+  {
+    "type": "loadByPeriod",
+    "period": "P30D",
+    "tieredReplicants": {"_default_tier": 2}
+  },
+  {
+    "type": "dropForever"
+  }
+]
+```
+
+### High Availability for Recent Data
+
+More replicas for recent data:
+
+```json
+[
+  {
+    "type": "loadByPeriod",
+    "period": "P7D",
+    "tieredReplicants": {"_default_tier": 3}
+  },
+  {
+    "type": "loadByPeriod",
+    "period": "P90D",
+    "tieredReplicants": {"_default_tier": 2}
+  },
+  {
+    "type": "dropForever"
+  }
+]
+```
+
+## Managing Dropped Data
+
+### Permanently Delete Data
+
+Dropped segments remain in deep storage. To permanently delete:
+
+1. Segments are marked "unused" via drop rules or manual action
+2. Submit a kill task to delete from deep storage
+3. Or enable auto-kill on the Coordinator
+
+See [Data Deletion](./delete#delete-data-permanently-using-kill-tasks) for details.
+
+### Reload Dropped Data
+
+<Steps>
+  <Step title="Update Retention Period">
+    Change the retention period (e.g., from 30 days to 60 days).
+  </Step>
+  
+  <Step title="Mark Segments as Used">
+    Use the web console or API to mark all segments for the datasource as "used".
+  </Step>
+  
+  <Step title="Coordinator Reloads Data">
+    The Coordinator reruns rules and loads missing segments automatically.
+  </Step>
+</Steps>
+
+## Viewing Retention Rules
+
+Retrieve all rules:
+
+```bash
+curl 'http://localhost:8081/druid/coordinator/v1/rules'
+```
+
+Retrieve rules for a specific datasource:
+
+```bash
+curl 'http://localhost:8081/druid/coordinator/v1/rules/wikipedia?full=true'
+```
+
+View audit history:
+
+```bash
+curl 'http://localhost:8081/druid/coordinator/v1/rules/history?interval=2024-01-01/2024-02-01'
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Set Default Rules" icon="list">
+    Configure default rules to prevent unlimited data retention across all datasources.
+  </Card>
+  
+  <Card title="Use Period Rules" icon="clock">
+    Prefer period-based rules over interval-based for dynamic retention that adapts as time progresses.
+  </Card>
+  
+  <Card title="Test Rule Order" icon="arrow-down-1-9">
+    Verify rule order carefully - segments match the first applicable rule only.
+  </Card>
+  
+  <Card title="Enable Auto-Kill" icon="trash">
+    Configure auto-kill to automatically clean up unused segments from deep storage.
+  </Card>
+</CardGroup>
+
+## Learn More
+
+<CardGroup cols={2}>
+  <Card title="Retention Tutorial" icon="graduation-cap" href="../tutorials/tutorial-retention">
+    Step-by-step guide to configuring retention rules
+  </Card>
+  
+  <Card title="Data Deletion" icon="trash" href="./delete">
+    Permanently delete data with kill tasks
+  </Card>
+  
+  <Card title="Retention Rules API" icon="code" href="../api-reference/retention-rules-api">
+    Complete API reference for managing rules
+  </Card>
+  
+  <Card title="Mixed Workloads" icon="layer-group" href="../operations/mixed-workloads">
+    Configure tiering for different workload types
+  </Card>
+</CardGroup>

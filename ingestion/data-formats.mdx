@@ -1,0 +1,543 @@
+---
+title: Source Input Formats
+description: Learn about data formats supported by Apache Druid including JSON, CSV, Parquet, Avro, and more
+---
+
+Apache Druid can ingest denormalized data in JSON, CSV, or a delimited form such as TSV, or any custom format. While most examples in the documentation use data in JSON format, it is not difficult to configure Druid to ingest any other delimited data.
+
+## Supported Formats
+
+<CardGroup cols={3}>
+  <Card title="JSON" icon="brackets-curly">
+    Most common format for ingesting data
+  </Card>
+  <Card title="CSV" icon="file-csv">
+    Comma-separated values format
+  </Card>
+  <Card title="TSV" icon="table">
+    Tab-separated values format
+  </Card>
+  <Card title="Parquet" icon="database">
+    Columnar storage format
+  </Card>
+  <Card title="ORC" icon="layer-group">
+    Optimized Row Columnar format
+  </Card>
+  <Card title="Avro" icon="file-code">
+    Binary serialization format
+  </Card>
+</CardGroup>
+
+## Data Format Examples
+
+<Tabs>
+  <Tab title="JSON">
+    ```json
+    {"timestamp": "2013-08-31T01:02:33Z", "page": "Gypsy Danger", "language" : "en", "user" : "nuclear", "unpatrolled" : "true", "newPage" : "true", "robot": "false", "anonymous": "false", "namespace":"article", "continent":"North America", "country":"United States", "region":"Bay Area", "city":"San Francisco", "added": 57, "deleted": 200, "delta": -143}
+    {"timestamp": "2013-08-31T03:32:45Z", "page": "Striker Eureka", "language" : "en", "user" : "speed", "unpatrolled" : "false", "newPage" : "true", "robot": "true", "anonymous": "false", "namespace":"wikipedia", "continent":"Australia", "country":"Australia", "region":"Cantebury", "city":"Syndey", "added": 459, "deleted": 129, "delta": 330}
+    ```
+  </Tab>
+  
+  <Tab title="CSV">
+    ```csv
+    2013-08-31T01:02:33Z,"Gypsy Danger","en","nuclear","true","true","false","false","article","North America","United States","Bay Area","San Francisco",57,200,-143
+    2013-08-31T03:32:45Z,"Striker Eureka","en","speed","false","true","true","false","wikipedia","Australia","Australia","Cantebury","Syndey",459,129,330
+    ```
+    
+    <Note>CSV and TSV data do not contain column headers by default. You'll need to specify columns in your ingestion spec.</Note>
+  </Tab>
+  
+  <Tab title="TSV">
+    ```
+    2013-08-31T01:02:33Z  "Gypsy Danger"  "en"  "nuclear" "true"  "true"  "false" "false" "article" "North America" "United States" "Bay Area"  "San Francisco" 57  200 -143
+    2013-08-31T03:32:45Z  "Striker Eureka"  "en"  "speed" "false" "true"  "true"  "false" "wikipedia" "Australia" "Australia" "Cantebury" "Syndey"  459 129 330
+    ```
+  </Tab>
+</Tabs>
+
+## Input Format Configuration
+
+### JSON Format
+
+Configure the JSON `inputFormat` to load JSON data:
+
+<ParamField path="type" type="string" required>
+  Set value to `json`
+</ParamField>
+
+<ParamField path="flattenSpec" type="object">
+  Specifies flattening configuration for nested JSON data
+</ParamField>
+
+<ParamField path="featureSpec" type="object">
+  JSON parser features supported by Jackson. Example: `{"ALLOW_SINGLE_QUOTES": true, "ALLOW_UNQUOTED_FIELD_NAMES": true}`
+</ParamField>
+
+<ParamField path="assumeNewlineDelimited" type="boolean" default={false}>
+  If true, enables more flexible parsing exception handling for newline-delimited JSON
+</ParamField>
+
+<ParamField path="useJsonNodeReader" type="boolean" default={false}>
+  When ingesting multi-line JSON events, enables retention of valid JSON events encountered before a parsing exception
+</ParamField>
+
+<CodeGroup>
+```json Example
+{
+  "ioConfig": {
+    "inputFormat": {
+      "type": "json"
+    }
+  }
+}
+```
+</CodeGroup>
+
+### CSV Format
+
+Configure the CSV `inputFormat` to load CSV data:
+
+<ParamField path="type" type="string" required>
+  Set value to `csv`
+</ParamField>
+
+<ParamField path="columns" type="array">
+  Specifies the columns of the data. Required if `findColumnsFromHeader` is false or missing
+</ParamField>
+
+<ParamField path="findColumnsFromHeader" type="boolean">
+  If true, extracts column names from the header row
+</ParamField>
+
+<ParamField path="skipHeaderRows" type="integer" default={0}>
+  Number of rows to skip at the beginning
+</ParamField>
+
+<ParamField path="listDelimiter" type="string" default="ctrl+A">
+  Custom delimiter for multi-value dimensions
+</ParamField>
+
+<ParamField path="tryParseNumbers" type="boolean" default={false}>
+  If true, attempts to parse numeric strings into long or double
+</ParamField>
+
+<CodeGroup>
+```json Example
+{
+  "ioConfig": {
+    "inputFormat": {
+      "type": "csv",
+      "columns": [
+        "timestamp",
+        "page",
+        "language",
+        "user",
+        "unpatrolled",
+        "newPage",
+        "robot",
+        "anonymous",
+        "namespace",
+        "continent",
+        "country",
+        "region",
+        "city",
+        "added",
+        "deleted",
+        "delta"
+      ]
+    }
+  }
+}
+```
+</CodeGroup>
+
+### TSV Format
+
+Configure the TSV `inputFormat` to load TSV data:
+
+<ParamField path="type" type="string" required>
+  Set value to `tsv`
+</ParamField>
+
+<ParamField path="delimiter" type="string" default="\t">
+  Custom delimiter for data values
+</ParamField>
+
+<ParamField path="columns" type="array">
+  Specifies the columns of the data. Required if `findColumnsFromHeader` is false or missing
+</ParamField>
+
+<ParamField path="findColumnsFromHeader" type="boolean">
+  If true, extracts column names from the header row
+</ParamField>
+
+<CodeGroup>
+```json Example
+{
+  "ioConfig": {
+    "inputFormat": {
+      "type": "tsv",
+      "columns": ["timestamp","page","language","user"],
+      "delimiter": "|"
+    }
+  }
+}
+```
+</CodeGroup>
+
+## Binary Formats
+
+### Parquet Format
+
+<Info>Load the `druid-parquet-extensions` extension to use Parquet format</Info>
+
+<ParamField path="type" type="string" required>
+  Set value to `parquet`
+</ParamField>
+
+<ParamField path="flattenSpec" type="object">
+  Define a flattenSpec to extract nested values. Only 'path' expressions are supported
+</ParamField>
+
+<ParamField path="binaryAsString" type="boolean" default={false}>
+  Treat bytes parquet columns as UTF-8 encoded strings
+</ParamField>
+
+<CodeGroup>
+```json Example
+{
+  "ioConfig": {
+    "inputFormat": {
+      "type": "parquet",
+      "flattenSpec": {
+        "useFieldDiscovery": true,
+        "fields": [
+          {
+            "type": "path",
+            "name": "nested",
+            "expr": "$.path.to.nested"
+          }
+        ]
+      },
+      "binaryAsString": false
+    }
+  }
+}
+```
+</CodeGroup>
+
+### ORC Format
+
+<Info>Load the `druid-orc-extensions` extension to use ORC format</Info>
+
+<ParamField path="type" type="string" required>
+  Set value to `orc`
+</ParamField>
+
+<ParamField path="flattenSpec" type="object">
+  Specifies flattening configuration for nested ORC data. Only 'path' expressions are supported
+</ParamField>
+
+<ParamField path="binaryAsString" type="boolean" default={false}>
+  Treat binary ORC columns as UTF-8 encoded strings
+</ParamField>
+
+<CodeGroup>
+```json Example
+{
+  "ioConfig": {
+    "inputFormat": {
+      "type": "orc",
+      "flattenSpec": {
+        "useFieldDiscovery": true,
+        "fields": [
+          {
+            "type": "path",
+            "name": "nested",
+            "expr": "$.path.to.nested"
+          }
+        ]
+      },
+      "binaryAsString": false
+    }
+  }
+}
+```
+</CodeGroup>
+
+### Avro Stream Format
+
+<Info>Load the `druid-avro-extensions` extension to use Avro format</Info>
+
+<ParamField path="type" type="string" required>
+  Set value to `avro_stream`
+</ParamField>
+
+<ParamField path="avroBytesDecoder" type="object" required>
+  Specifies how to decode bytes to Avro record
+</ParamField>
+
+<ParamField path="flattenSpec" type="object">
+  Define a flattenSpec to extract nested values. Only 'path' expressions are supported
+</ParamField>
+
+<ParamField path="binaryAsString" type="boolean" default={false}>
+  Treat bytes Avro columns as UTF-8 encoded strings
+</ParamField>
+
+<CodeGroup>
+```json Inline Schema Example
+{
+  "ioConfig": {
+    "inputFormat": {
+      "type": "avro_stream",
+      "avroBytesDecoder": {
+        "type": "schema_inline",
+        "schema": {
+          "namespace": "org.apache.druid.data",
+          "name": "User",
+          "type": "record",
+          "fields": [
+            { "name": "FullName", "type": "string" },
+            { "name": "Country", "type": "string" }
+          ]
+        }
+      },
+      "flattenSpec": {
+        "useFieldDiscovery": true
+      },
+      "binaryAsString": false
+    }
+  }
+}
+```
+
+```json Schema Registry Example
+{
+  "avroBytesDecoder": {
+    "type": "schema_registry",
+    "url": "http://schema-registry:8081"
+  }
+}
+```
+</CodeGroup>
+
+## Kafka Input Format
+
+The `kafka` input format lets you parse Kafka metadata fields in addition to the payload value contents.
+
+<ParamField path="type" type="string" required>
+  Set value to `kafka`
+</ParamField>
+
+<ParamField path="valueFormat" type="object" required>
+  The input format to parse the Kafka value payload
+</ParamField>
+
+<ParamField path="timestampColumnName" type="string" default="kafka.timestamp">
+  The name of the column for the Kafka timestamp
+</ParamField>
+
+<ParamField path="topicColumnName" type="string" default="kafka.topic">
+  The name of the column for the Kafka topic
+</ParamField>
+
+<ParamField path="headerFormat" type="object">
+  Specifies how to parse Kafka headers. Supports String types with various encodings (UTF-8, ISO-8859-1, etc.)
+</ParamField>
+
+<ParamField path="headerColumnPrefix" type="string" default="kafka.header.">
+  Prefix for all header columns
+</ParamField>
+
+<ParamField path="keyFormat" type="object">
+  The input format to parse the Kafka key
+</ParamField>
+
+<ParamField path="keyColumnName" type="string" default="kafka.key">
+  The name of the column for the Kafka key
+</ParamField>
+
+<CodeGroup>
+```json Example
+{
+  "ioConfig": {
+    "inputFormat": {
+      "type": "kafka",
+      "valueFormat": {
+        "type": "json"
+      },
+      "timestampColumnName": "kafka.timestamp",
+      "topicColumnName": "kafka.topic",
+      "headerFormat": {
+        "type": "string",
+        "encoding": "UTF-8"
+      },
+      "headerColumnPrefix": "kafka.header.",
+      "keyFormat": {
+        "type": "tsv",
+        "findColumnsFromHeader": false,
+        "columns": ["x"]
+      },
+      "keyColumnName": "kafka.key"
+    }
+  }
+}
+```
+</CodeGroup>
+
+### Kafka Metadata Example
+
+Given this Kafka message:
+
+- **Kafka timestamp**: `1680795276351`
+- **Kafka topic**: `wiki-edits`
+- **Kafka headers**: `env=development`, `zone=z1`
+- **Kafka key**: `wiki-edit`
+- **Kafka payload**: `{"channel":"#sv.wikipedia","timestamp":"2016-06-27T00:00:11.080Z","page":"Salo Toraut","delta":31}`
+
+The Kafka input format parses it as:
+
+```json
+{
+  "channel": "#sv.wikipedia",
+  "timestamp": "2016-06-27T00:00:11.080Z",
+  "page": "Salo Toraut",
+  "delta": 31,
+  "kafka.timestamp": 1680795276351,
+  "kafka.topic": "wiki-edits",
+  "kafka.header.env": "development",
+  "kafka.header.zone": "z1",
+  "kafka.key": "wiki-edit"
+}
+```
+
+## Kinesis Input Format
+
+The `kinesis` input format lets you parse Kinesis metadata fields in addition to the payload value contents.
+
+<ParamField path="type" type="string" required>
+  Set value to `kinesis`
+</ParamField>
+
+<ParamField path="valueFormat" type="object" required>
+  The input format to parse the Kinesis value payload
+</ParamField>
+
+<ParamField path="partitionKeyColumnName" type="string" default="kinesis.partitionKey">
+  The name of the column for the Kinesis partition key
+</ParamField>
+
+<ParamField path="timestampColumnName" type="string" default="kinesis.timestamp">
+  The name of the column for the Kinesis timestamp
+</ParamField>
+
+<CodeGroup>
+```json Example
+{
+  "ioConfig": {
+    "inputFormat": {
+      "type": "kinesis",
+      "valueFormat": {
+        "type": "json"
+      },
+      "timestampColumnName": "kinesis.timestamp",
+      "partitionKeyColumnName": "kinesis.partitionKey"
+    }
+  }
+}
+```
+</CodeGroup>
+
+## FlattenSpec
+
+You can use the `flattenSpec` object to flatten nested data as an alternative to nested columns.
+
+<ParamField path="useFieldDiscovery" type="boolean" default={true}>
+  If true, interpret all root-level fields as available for usage
+</ParamField>
+
+<ParamField path="fields" type="array" default={[]}>
+  Specifies the fields of interest and how they are accessed
+</ParamField>
+
+<CodeGroup>
+```json Example
+{
+  "flattenSpec": {
+    "useFieldDiscovery": true,
+    "fields": [
+      { "name": "baz", "type": "root" },
+      { "name": "foo_bar", "type": "path", "expr": "$.foo.bar" },
+      { "name": "first_food", "type": "jq", "expr": ".thing.food[1]" }
+    ]
+  }
+}
+```
+</CodeGroup>
+
+### Field Types
+
+<Accordion title="Root">
+  Refers to a field at the root level of the record. Only useful if `useFieldDiscovery` is false.
+</Accordion>
+
+<Accordion title="Path">
+  Refers to a field using JsonPath notation. Supported by most formats including `avro`, `json`, `orc`, and `parquet`.
+  
+  Example: `{"type": "path", "name": "nested", "expr": "$.path.to.nested"}`
+</Accordion>
+
+<Accordion title="JQ">
+  Refers to a field using jackson-jq notation. Only supported for the `json` format.
+  
+  Example: `{"type": "jq", "name": "first_food", "expr": ".thing.food[1]"}`
+</Accordion>
+
+<Accordion title="Tree">
+  Refers to a nested field from the root level. More efficient than `path` or `jq` for simple hierarchical fetches. Only supported for `json`.
+  
+  Example: `{"type": "tree", "name": "foo_other_bar", "nodes": ["foo", "other", "bar"]}`
+</Accordion>
+
+## Compression Formats
+
+Druid supports the following compression formats:
+
+<CardGroup cols={3}>
+  <Card title="gzip" icon="file-zipper">
+    `.gz` files
+  </Card>
+  <Card title="bzip2" icon="file-zipper">
+    `.bz2` files
+  </Card>
+  <Card title="xz" icon="file-zipper">
+    `.xz` files
+  </Card>
+  <Card title="zip" icon="file-zipper">
+    `.zip` files
+  </Card>
+  <Card title="Snappy" icon="file-zipper">
+    `.sz` files
+  </Card>
+  <Card title="ZSTD" icon="file-zipper">
+    `.zst` files
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Input Sources" icon="inbox" href="/ingestion/input-sources">
+    Configure where to read your data from
+  </Card>
+  <Card title="Ingestion Spec" icon="file-code" href="/ingestion/ingestion-spec">
+    Complete ingestion specification reference
+  </Card>
+  <Card title="Schema Design" icon="sitemap" href="/ingestion/schema-design">
+    Best practices for schema design
+  </Card>
+  <Card title="Native Batch" icon="layer-group" href="/ingestion/native-batch">
+    Learn about batch ingestion
+  </Card>
+</CardGroup>

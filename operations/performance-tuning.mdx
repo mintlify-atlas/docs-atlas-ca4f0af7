@@ -1,0 +1,511 @@
+---
+title: "Performance Tuning"
+description: "Optimize Apache Druid cluster performance with configuration guidelines for Historicals, Brokers, MiddleManagers, and JVM tuning"
+---
+
+This guide provides configuration recommendations and best practices for tuning Apache Druid cluster performance. These are general guidelines and starting points that should be adjusted based on your specific workload.
+
+<Info>
+For comprehensive configuration details, see the [Configuration Reference](/configuration). For specific tuning questions, consult the [Druid community](https://druid.apache.org/community/).
+</Info>
+
+## Historical Tuning
+
+Historicals are the workhorses of query processing, serving data from segments stored on disk.
+
+### Heap Sizing
+
+The primary contributors to Historical heap usage:
+
+<CardGroup cols={2}>
+  <Card title="Query Results" icon="table">
+    Partial unmerged query results from segments
+  </Card>
+  <Card title="Lookups" icon="book">
+    Stored maps for lookup tables
+  </Card>
+</CardGroup>
+
+**General guideline:** `(0.5 GiB × number of CPU cores)`
+
+<Tabs>
+  <Tab title="Basic Configuration">
+    ```bash
+    # For an 8-core server
+    -Xms4g
+    -Xmx4g
+    ```
+  </Tab>
+  
+  <Tab title="With Lookups">
+    ```bash
+    # 8-core server with 2GB of lookups
+    # (0.5 × 8) + (2 × 2) = 8GB
+    -Xms8g
+    -Xmx8g
+    ```
+    
+    <Note>
+    Multiply lookup size by 2 to account for atomic swaps during updates.
+    </Note>
+  </Tab>
+  
+  <Tab title="With Cache">
+    ```properties
+    # Add cache size to heap calculation
+    druid.cache.sizeInBytes=2147483648  # 2GB
+    
+    # Total heap: (0.5 × cores) + cache + lookups
+    # 8 cores, 2GB cache, 1GB lookups
+    # (0.5 × 8) + 2 + 2 = 8GB
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+For heaps larger than 24GB, use a modern GC like Shenandoah or ZGC to avoid long GC pauses.
+</Warning>
+
+### Processing Threads and Buffers
+
+<ParamField path="druid.processing.numThreads" type="integer" default="number of cores - 1">
+  Number of processing threads for query execution.
+  
+  - **Too low:** CPU underutilization
+  - **Too high:** CPU contention
+  - **Recommended:** `number of cores - 1`
+</ParamField>
+
+<ParamField path="druid.processing.buffer.sizeBytes" type="bytes" default="500MiB">
+  Size of off-heap buffers for processing. Larger buffers allow more data to be processed in a single pass.
+  
+  **Recommended:** 500MiB - 1GiB
+</ParamField>
+
+<ParamField path="druid.processing.numMergeBuffers" type="integer">
+  Buffers for merging GroupBy query results.
+  
+  **Recommended:** `numThreads ÷ 4` (1:4 ratio)
+</ParamField>
+
+```properties
+# Example for 16-core Historical
+druid.processing.numThreads=15
+druid.processing.buffer.sizeBytes=536870912  # 512MiB
+druid.processing.numMergeBuffers=4
+```
+
+### Direct Memory Sizing
+
+Calculate required direct memory:
+
+```
+(numThreads + numMergeBuffers + 1) × buffer.sizeBytes
+```
+
+<Accordion title="Example Calculation">
+```bash
+# Configuration
+druid.processing.numThreads=15
+druid.processing.numMergeBuffers=4
+druid.processing.buffer.sizeBytes=536870912  # 512MiB
+
+# Calculation
+(15 + 4 + 1) × 512MiB = 10,240 MiB ≈ 10GB
+
+# Set JVM flag
+-XX:MaxDirectMemorySize=10g
+```
+
+The `+1` accounts for segment decompression buffers.
+</Accordion>
+
+### Connection Pool
+
+<ParamField path="druid.server.http.numThreads" type="integer">
+  HTTP server threads for handling requests.
+  
+  **Formula:** Slightly higher than sum of `druid.broker.http.numConnections` across all Brokers
+</ParamField>
+
+**Recommended starting point:** 60 threads (50 queries + 10 non-query requests)
+
+```properties
+druid.server.http.numThreads=60
+```
+
+### Segment Cache
+
+<Warning>
+**Critical:** Do not allocate more segment data than available system memory. Free memory is used for OS page cache.
+</Warning>
+
+```properties
+# Configure segment cache locations
+druid.segmentCache.locations=[{"path":"/mnt/druid/segment-cache","maxSize":"500g"}]
+
+# Optional: Override total size calculation
+druid.server.maxSize=500g
+```
+
+<Tip>
+For optimal performance, ensure: `free_system_memory / total_segment_cache_size` ratio is healthy. Aim for at least 20-30% of segments to fit in page cache.
+</Tip>
+
+### Storage Recommendations
+
+<Check>
+**Use SSDs for Historical storage** to minimize segment load times and improve query performance.
+</Check>
+
+## Broker Tuning
+
+Brokers merge results from Historicals and route queries.
+
+### Heap Sizing
+
+Broker heap usage scales with:
+
+<Steps>
+  <Step title="Partial Query Results">
+    Results from Historicals and Tasks before merging
+  </Step>
+  <Step title="Segment Timeline">
+    Location information for all available segments
+  </Step>
+  <Step title="Segment Metadata">
+    Schemas and metadata for all segments
+  </Step>
+</Steps>
+
+**Recommendations:**
+- **Small/Medium clusters** (~15 servers): 4-8 GiB
+- **Large clusters** (~100 servers): 30-60 GiB
+
+```bash
+# Medium cluster
+-Xms6g
+-Xmx6g
+
+# Large cluster  
+-Xms40g
+-Xmx40g
+```
+
+### Processing Configuration
+
+Brokers typically don't need processing threads (merge happens on-heap), but do need merge buffers:
+
+```properties
+druid.processing.buffer.sizeBytes=536870912  # 512MiB
+druid.processing.numMergeBuffers=4  # Same as Historical or higher
+```
+
+**Direct memory:** `(numMergeBuffers + 1) × buffer.sizeBytes`
+
+### Connection Pool
+
+<ParamField path="druid.broker.http.numConnections" type="integer">
+  Outgoing connections per Historical/Task. This limits concurrent queries the Broker can process.
+</ParamField>
+
+<ParamField path="druid.server.http.numThreads" type="integer">
+  Incoming HTTP request threads. Should be slightly higher than `numConnections`.
+</ParamField>
+
+```properties
+# Example for 3 Brokers, 10 connections each = 30 total to each Historical
+druid.broker.http.numConnections=10
+druid.server.http.numThreads=12
+```
+
+### Backpressure
+
+<ParamField path="druid.broker.http.maxQueuedBytes" type="bytes">
+  Maximum buffer size for queued unread data from Historicals/Tasks.
+  
+  **Formula:** `≈ 2MiB × number of Historicals`
+</ParamField>
+
+```properties
+# For 20 Historicals
+druid.broker.http.maxQueuedBytes=41943040  # 40MiB
+```
+
+<Warning>
+- **Too small:** Frequent stalls, inefficient queries
+- **Too large:** High memory pressure on Broker
+</Warning>
+
+### Broker Count
+
+**General guideline:** 1 Broker per 15 Historicals (minimum 2 for HA)
+
+## MiddleManager Tuning
+
+MiddleManagers launch Task processes for ingestion.
+
+### MiddleManager Configuration
+
+```bash
+# MiddleManager itself is lightweight
+-Xms128m
+-Xmx128m
+```
+
+<ParamField path="druid.worker.capacity" type="integer">
+  Maximum number of concurrent Tasks this MiddleManager can run.
+</ParamField>
+
+```properties
+druid.worker.capacity=4
+```
+
+### Task Configuration
+
+<Tabs>
+  <Tab title="Heap">
+    ```properties
+    # Basic heap for tasks
+    druid.indexer.runner.javaOpts=-Xms1g -Xmx1g
+    
+    # With 2GB lookups
+    druid.indexer.runner.javaOpts=-Xms5g -Xmx5g
+    ```
+  </Tab>
+  
+  <Tab title="Processing">
+    ```properties
+    # Tasks typically need fewer threads than Historicals
+    druid.indexer.fork.property.druid.processing.numThreads=2
+    druid.indexer.fork.property.druid.processing.numMergeBuffers=2
+    druid.indexer.fork.property.druid.processing.buffer.sizeBytes=104857600  # 100MiB
+    ```
+  </Tab>
+  
+  <Tab title="Connection Pool">
+    ```properties
+    # Similar to Historical configuration
+    druid.indexer.fork.property.druid.server.http.numThreads=60
+    ```
+  </Tab>
+</Tabs>
+
+**Direct memory formula:** `(numThreads + numMergeBuffers + 1) × buffer.sizeBytes`
+
+### Total MiddleManager Memory
+
+```
+Total = MM heap + (capacity × single task memory)
+
+Example:
+128MB + (4 × 2GB) = 8.128 GB
+```
+
+<Check>
+**Use SSDs for MiddleManager storage** for faster segment building and merging.
+</Check>
+
+## Coordinator Tuning
+
+### Heap Sizing
+
+Coordinator heap scales with:
+- Number of servers
+- Number of segments
+- Number of tasks
+
+**Recommendation:** Same size as Broker heap, or slightly smaller
+
+```bash
+-Xms6g
+-Xmx6g
+```
+
+### Dynamic Configuration
+
+<ParamField path="percentOfSegmentsToConsiderPerMove" type="integer" default="100">
+  Percentage of segments to consider when looking for segments to move.
+  
+  - **100:** Consider all segments (default, slower)
+  - **66:** Consider top 66% (faster, recommended starting point)
+  - **25:** Consider top 25% (much faster, more aggressive)
+</ParamField>
+
+```json
+{
+  "percentOfSegmentsToConsiderPerMove": 66,
+  "maxSegmentsToMove": 5
+}
+```
+
+<Tip>
+Lower this value if Coordinator cycles take too long on clusters with hundreds of thousands of segments.
+</Tip>
+
+## Overlord Tuning
+
+Overlord heap scales primarily with the number of running tasks.
+
+**Recommendation:** 25-50% of Coordinator heap
+
+```bash
+# For Coordinator with 6GB
+-Xms2g
+-Xmx2g
+```
+
+## Router Tuning
+
+Router has minimal resource requirements.
+
+```bash
+-Xms256m
+-Xmx256m
+```
+
+## JVM Tuning
+
+### Garbage Collection
+
+<CodeGroup>
+```bash G1GC (Default)
+-XX:+UseG1GC
+-XX:+ExitOnOutOfMemoryError
+-XX:MaxGCPauseMillis=200
+```
+
+```bash Shenandoah (Large Heaps)
+-XX:+UseShenandoahGC
+-XX:+ExitOnOutOfMemoryError
+```
+
+```bash ZGC (Large Heaps)
+-XX:+UseZGC
+-XX:+ExitOnOutOfMemoryError
+```
+</CodeGroup>
+
+<Note>
+Shenandoah and ZGC are recommended for heaps > 24GB to minimize pause times.
+</Note>
+
+### Essential JVM Flags
+
+```bash
+# Timezone and encoding
+-Duser.timezone=UTC
+-Dfile.encoding=UTF-8
+
+# Temp directory (use fast, non-volatile storage, NOT tmpfs or NFS)
+-Djava.io.tmpdir=/mnt/fast-disk/druid-tmp
+
+# Logging
+-Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager
+-Dorg.jboss.logging.provider=slf4j
+-Dlog4j.shutdownHookEnabled=true
+
+# GC logging
+-Xloggc:/var/log/druid/historical.gc.log
+-XX:+PrintGCDetails
+-XX:+PrintGCDateStamps
+-XX:+PrintGCTimeStamps
+-XX:+PrintGCApplicationStoppedTime
+-XX:+UseGCLogFileRotation
+-XX:NumberOfGCLogFiles=50
+-XX:GCLogFileSize=10m
+
+# Error handling
+-XX:+ExitOnOutOfMemoryError
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=/var/log/druid/historical.hprof
+
+# Direct memory (calculate based on processing buffers)
+-XX:MaxDirectMemorySize=10g
+```
+
+## System Configuration
+
+### Linux Limits
+
+<Tabs>
+  <Tab title="File Descriptors">
+    Edit `/etc/security/limits.conf`:
+    ```bash
+    druid soft nofile 65536
+    druid hard nofile 65536
+    ```
+  </Tab>
+  
+  <Tab title="Memory Maps">
+    Edit `/etc/sysctl.d/99-druid.conf`:
+    ```bash
+    vm.max_map_count=262144
+    ```
+    
+    Apply changes:
+    ```bash
+    sudo sysctl -p /etc/sysctl.d/99-druid.conf
+    ```
+  </Tab>
+</Tabs>
+
+### Swap Space
+
+<Warning>
+**Disable swap** for Historical, MiddleManager, and Indexer processes. Memory-mapped segments with swap lead to poor performance.
+</Warning>
+
+```bash
+# Disable swap for the druid user's processes
+sudo swapoff -a  # Temporary
+
+# Permanent: comment out swap in /etc/fstab
+```
+
+### Storage
+
+<CardGroup cols={2}>
+  <Card title="Use SSDs" icon="hard-drive">
+    Essential for Historicals and MiddleManagers
+  </Card>
+  <Card title="JBOD vs RAID" icon="server">
+    JBOD can provide better throughput than software RAID
+  </Card>
+</CardGroup>
+
+### Additional Optimizations
+
+<Steps>
+  <Step title="Mount /tmp on tmpfs">
+    Avoid GC pauses from JVM statistics. See [The Four Month Bug](http://www.evanjones.ca/jvm-mmap-pause.html).
+  </Step>
+  <Step title="Separate GC logs from data">
+    Write GC and Druid logs to different disks than data on disk-intensive processes.
+  </Step>
+  <Step title="Disable Transparent Huge Pages">
+    ```bash
+    echo never > /sys/kernel/mm/transparent_hugepage/enabled
+    ```
+  </Step>
+  <Step title="Consider disabling biased locking">
+    ```bash
+    -XX:-UseBiasedLocking
+    ```
+  </Step>
+</Steps>
+
+## Monitoring and Validation
+
+<Check>
+**Key metrics to monitor after tuning:**
+- Query latency (`query/time`)
+- GC pause time (`jvm/gc/time`)
+- Thread pool utilization (`jetty/threadPool/utilizationRate`)
+- Segment scan queue (`segment/scan/pending`)
+- Ingestion lag (Kafka/Kinesis specific)
+</Check>
+
+<Tip>
+Always test configuration changes in a staging environment before applying to production.
+</Tip>

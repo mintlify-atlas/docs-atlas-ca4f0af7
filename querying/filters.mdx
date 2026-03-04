@@ -1,0 +1,538 @@
+---
+title: Query Filters
+description: Reference for Apache Druid native query filters including selector, equality, range, logical, and array filters
+---
+
+A filter indicates which rows of data should be included in query computation. Filters are the equivalent of SQL WHERE clauses.
+
+<Note>
+This document describes native query filters. For SQL filtering, see the [SQL documentation](sql-scalar).
+</Note>
+
+By default, Druid uses SQL-compatible three-value logic when filtering. See [Boolean logic](sql-data-types#boolean-logic) for details.
+
+## Selector Filter
+
+The simplest filter - matches a dimension with a specific value:
+
+```json
+{"type": "selector", "dimension": "someColumn", "value": "hello"}
+```
+
+Equivalent to: `WHERE someColumn = 'hello'`
+
+**Match NULL values:**
+
+```json
+{"type": "selector", "dimension": "someColumn", "value": null}
+```
+
+| Property | Description | Required |
+|----------|-------------|----------|
+| `type` | Must be "selector" | Yes |
+| `dimension` | Input column or virtual column | Yes |
+| `value` | String value to match | No (omit to match NULL) |
+| `extractionFn` | [Extraction function](dimensionspecs#extraction-functions) | No |
+
+**Supported types:** STRING (single/multi-value), LONG, FLOAT, DOUBLE. For ARRAY or COMPLEX, use equality/null filters.
+
+## Equality Filter
+
+Replacement for selector filter with support for any column type:
+
+```json
+{"type": "equals", "column": "someColumn", "matchValueType": "STRING", "matchValue": "hello"}
+```
+
+**Numeric example:**
+
+```json
+{"type": "equals", "column": "someNumericColumn", "matchValueType": "DOUBLE", "matchValue": 1.23}
+```
+
+**Array example:**
+
+```json
+{"type": "equals", "column": "someArrayColumn", "matchValueType": "ARRAY<LONG>", "matchValue": [1, 2, 3]}
+```
+
+| Property | Description | Required |
+|----------|-------------|----------|
+| `type` | Must be "equals" | Yes |
+| `column` | Input column or virtual column | Yes |
+| `matchValueType` | Data type (e.g., STRING, LONG, ARRAY&lt;STRING&gt;) | Yes |
+| `matchValue` | Value to match (must not be null) | Yes |
+
+<Note>
+Druid SQL planner uses equality filter by default unless `sqlUseBoundAndSelectors` is true in query context.
+</Note>
+
+## Null Filter
+
+Matches NULL values only:
+
+```json
+{"type": "null", "column": "someColumn"}
+```
+
+Equivalent to: `WHERE someColumn IS NULL`
+
+## Column Comparison Filter
+
+Compares dimensions to each other:
+
+```json
+{
+  "type": "columnComparison",
+  "dimensions": [
+    "someColumn",
+    {
+      "type": "default",
+      "dimension": "someLongColumn",
+      "outputType": "LONG"
+    }
+  ]
+}
+```
+
+<Warning>
+All values are converted to strings before comparison, allowing differently-typed columns to match.
+</Warning>
+
+## Logical Expression Filters
+
+### AND Filter
+
+```json
+{
+  "type": "and",
+  "fields": [
+    {"type": "equals", "column": "someColumn", "matchValue": "a", "matchValueType": "STRING"},
+    {"type": "equals", "column": "otherColumn", "matchValue": 1234, "matchValueType": "LONG"},
+    {"type": "null", "column": "anotherColumn"}
+  ]
+}
+```
+
+Equivalent to: `WHERE someColumn = 'a' AND otherColumn = 1234 AND anotherColumn IS NULL`
+
+### OR Filter
+
+```json
+{
+  "type": "or",
+  "fields": [
+    {"type": "equals", "column": "someColumn", "matchValue": "a", "matchValueType": "STRING"},
+    {"type": "equals", "column": "otherColumn", "matchValue": 1234, "matchValueType": "LONG"}
+  ]
+}
+```
+
+### NOT Filter
+
+```json
+{"type": "not", "field": {"type": "null", "column": "someColumn"}}
+```
+
+Equivalent to: `WHERE someColumn IS NOT NULL`
+
+## In Filter
+
+Matches if value is in the provided set:
+
+```json
+{
+  "type": "in",
+  "dimension": "outlaw",
+  "values": ["Good", "Bad", "Ugly"]
+}
+```
+
+Equivalent to: `WHERE outlaw IN ('Good', 'Bad', 'Ugly')`
+
+<Note>
+Unlike SQL IN, this filter matches NULL if `null` is in the `values` array.
+</Note>
+
+## Bound Filter
+
+Range filtering with string-based bounds:
+
+```json
+{
+  "type": "bound",
+  "dimension": "age",
+  "lower": "21",
+  "upper": "31",
+  "ordering": "numeric"
+}
+```
+
+Equivalent to: `WHERE 21 <= age <= 31`
+
+**Properties:**
+
+| Property | Description | Required |
+|----------|-------------|----------|
+| `type` | Must be "bound" | Yes |
+| `dimension` | Input column | Yes |
+| `lower` | Lower bound value | No |
+| `upper` | Upper bound value | No |
+| `lowerStrict` | Use `>` instead of `>=` | No (defaults to false) |
+| `upperStrict` | Use `<` instead of `<=` | No (defaults to false) |
+| `ordering` | "lexicographic", "alphanumeric", "numeric", "strlen", "version" | No (defaults to "lexicographic") |
+| `extractionFn` | [Extraction function](dimensionspecs#extraction-functions) | No |
+
+**Strict comparison example:**
+
+```json
+{
+  "type": "bound",
+  "dimension": "age",
+  "lower": "21",
+  "lowerStrict": true,
+  "upper": "31",
+  "upperStrict": true,
+  "ordering": "numeric"
+}
+```
+
+Equivalent to: `WHERE 21 < age < 31`
+
+## Range Filter
+
+Replacement for bound filter with type-specific comparison:
+
+```json
+{
+  "type": "range",
+  "column": "age",
+  "matchValueType": "LONG",
+  "lower": 21,
+  "upper": 31
+}
+```
+
+**String comparison:**
+
+```json
+{
+  "type": "range",
+  "column": "name",
+  "matchValueType": "STRING",
+  "lower": "foo",
+  "upper": "hoo"
+}
+```
+
+**Array comparison:**
+
+```json
+{
+  "type": "range",
+  "column": "arrayColumn",
+  "matchValueType": "ARRAY<STRING>",
+  "lower": ["a", "b", "c"],
+  "lowerOpen": true,
+  "upper": ["d", "e", "f"],
+  "upperOpen": true
+}
+```
+
+| Property | Description | Required |
+|----------|-------------|----------|
+| `type` | Must be "range" | Yes |
+| `column` | Input column | Yes |
+| `matchValueType` | Data type for bounds | Yes |
+| `lower` | Lower bound | No* |
+| `upper` | Upper bound | No* |
+| `lowerOpen` | Use `>` instead of `>=` | No |
+| `upperOpen` | Use `<` instead of `<=` | No |
+
+*At least one of `lower` or `upper` must be specified
+
+## Like Filter
+
+Wildcard pattern matching:
+
+```json
+{
+  "type": "like",
+  "dimension": "last_name",
+  "pattern": "D%"
+}
+```
+
+Equivalent to: `WHERE last_name LIKE 'D%'`
+
+**Special characters:**
+- `%` - matches any number of characters
+- `_` - matches exactly one character
+
+| Property | Description | Required |
+|----------|-------------|----------|
+| `type` | Must be "like" | Yes |
+| `dimension` | Input column | Yes |
+| `pattern` | LIKE pattern | Yes |
+| `escape` | Escape character | No |
+| `extractionFn` | [Extraction function](dimensionspecs#extraction-functions) | No |
+
+## Regular Expression Filter
+
+Java regex pattern matching:
+
+```json
+{"type": "regex", "dimension": "someColumn", "pattern": "^50.*"}
+```
+
+<Tip>
+For simple prefix matching, use a like filter instead for better performance.
+</Tip>
+
+## Array Contains Element Filter
+
+Check if ARRAY contains a specific element:
+
+```json
+{"type": "arrayContainsElement", "column": "someArrayColumn", "elementMatchValueType": "STRING", "elementMatchValue": "hello"}
+```
+
+Equivalent to: `WHERE ARRAY_CONTAINS(someArrayColumn, 'hello')`
+
+**Numeric array:**
+
+```json
+{"type": "arrayContainsElement", "column": "someNumericArrayColumn", "elementMatchValueType": "DOUBLE", "elementMatchValue": 1.23}
+```
+
+**Check array contains all values (AND):**
+
+```json
+{
+  "type": "and",
+  "fields": [
+    {"type": "arrayContainsElement", "column": "arr", "elementMatchValueType": "LONG", "elementMatchValue": 1},
+    {"type": "arrayContainsElement", "column": "arr", "elementMatchValueType": "LONG", "elementMatchValue": 2},
+    {"type": "arrayContainsElement", "column": "arr", "elementMatchValueType": "LONG", "elementMatchValue": 3}
+  ]
+}
+```
+
+**Check array overlaps (OR):**
+
+```json
+{
+  "type": "or",
+  "fields": [
+    {"type": "arrayContainsElement", "column": "arr", "elementMatchValueType": "LONG", "elementMatchValue": 1},
+    {"type": "arrayContainsElement", "column": "arr", "elementMatchValueType": "LONG", "elementMatchValue": 2}
+  ]
+}
+```
+
+## Interval Filter
+
+Filter on long millisecond columns using ISO 8601 intervals:
+
+```json
+{
+  "type": "interval",
+  "dimension": "__time",
+  "intervals": [
+    "2014-10-01T00:00:00.000Z/2014-10-07T00:00:00.000Z",
+    "2014-11-15T00:00:00.000Z/2014-11-16T00:00:00.000Z"
+  ]
+}
+```
+
+Converts to bound filters with numeric comparison (left-closed, right-open: `start <= time < end`).
+
+## True Filter
+
+Matches all values:
+
+```json
+{"type": "true"}
+```
+
+## False Filter
+
+Matches no values:
+
+```json
+{"type": "false"}
+```
+
+## Search Filter
+
+Partial string matching:
+
+```json
+{
+  "type": "search",
+  "dimension": "product",
+  "query": {
+    "type": "insensitive_contains",
+    "value": "foo"
+  }
+}
+```
+
+### Search Query Types
+
+**Contains:**
+
+```json
+{"type": "contains", "value": "foo", "caseSensitive": false}
+```
+
+**Insensitive Contains:**
+
+```json
+{"type": "insensitive_contains", "value": "foo"}
+```
+
+**Fragment:**
+
+```json
+{"type": "fragment", "values": ["foo", "bar"], "caseSensitive": false}
+```
+
+## Expression Filter
+
+Arbitrary boolean expressions using Druid expression system:
+
+```json
+{
+  "type": "expression",
+  "expression": "((product_type == 42) && (!is_deleted))"
+}
+```
+
+<Warning>
+May be less performant than other filters since it can't always use the same optimizations.
+</Warning>
+
+## JavaScript Filter
+
+Custom JavaScript predicate function:
+
+```json
+{
+  "type": "javascript",
+  "dimension": "name",
+  "function": "function(x) { return(x >= 'bar' && x <= 'foo') }"
+}
+```
+
+<Warning>
+JavaScript is disabled by default. See [JavaScript programming guide](../development/javascript) for how to enable.
+</Warning>
+
+## Filtering Multi-Value Dimensions
+
+Filters match a row if **any** value in a multi-value dimension satisfies the filter:
+
+```json
+{"type": "equals", "column": "someMultiValueColumn", "matchValueType": "STRING", "matchValue": "b"}
+```
+
+This matches row `['a', 'b', 'c']` because it contains 'b'.
+
+**Native "contradiction" example:**
+
+```json
+{
+  "type": "and",
+  "fields": [
+    {"type": "equals", "column": "mvCol", "matchValueType": "STRING", "matchValue": "a"},
+    {"type": "equals", "column": "mvCol", "matchValueType": "STRING", "matchValue": "b"}
+  ]
+}
+```
+
+Matches `['a', 'b', 'c']` but not `['a', 'c']`. In SQL, use [multi-value string functions](sql-multivalue-string-functions) like `MV_CONTAINS`.
+
+## Filtering Numeric Columns
+
+Numeric columns can be filtered using:
+- Equality/range filters with numeric `matchValueType`
+- String-based filters (values converted to strings)
+
+**Range filter (recommended):**
+
+```json
+{
+  "type": "range",
+  "column": "myFloatColumn",
+  "matchValueType": "FLOAT",
+  "lower": 10.1,
+  "lowerOpen": false,
+  "upper": 20.9,
+  "upperOpen": true
+}
+```
+
+**Bound filter (legacy):**
+
+```json
+{
+  "type": "bound",
+  "dimension": "myFloatColumn",
+  "ordering": "numeric",
+  "lower": "10",
+  "upper": "20",
+  "upperStrict": true
+}
+```
+
+## Filtering on Timestamp Column
+
+Filter on `__time` using long millisecond values:
+
+**Equality filter:**
+
+```json
+{
+  "type": "equals",
+  "dimension": "__time",
+  "matchValueType": "LONG",
+  "value": 124457387532
+}
+```
+
+**Interval filter:**
+
+```json
+{
+  "type": "interval",
+  "dimension": "__time",
+  "intervals": [
+    "2014-10-01T00:00:00.000Z/2014-10-07T00:00:00.000Z"
+  ]
+}
+```
+
+**Day of week with extraction function:**
+
+```json
+{
+  "type": "selector",
+  "dimension": "__time",
+  "value": "Friday",
+  "extractionFn": {
+    "type": "timeFormat",
+    "format": "EEEE",
+    "timeZone": "America/New_York",
+    "locale": "en"
+  }
+}
+```
+
+## Column Types
+
+Druid supports filtering on timestamp, string, long, and float columns.
+
+<Note>
+Only string columns (and 'auto' type columns) have bitmap indexes. Filtering other column types requires scanning.
+</Note>

@@ -1,0 +1,474 @@
+---
+title: Data Updates
+description: Update existing data in Apache Druid through overwrites, reindexing, and other methods for modifying segment data.
+---
+
+Apache Druid stores data in immutable segments partitioned by time chunk. This architecture requires specific approaches for updating existing data.
+
+## Update Methods
+
+<Warning>
+Druid does not support single-record updates by primary key. To update data, you must overwrite or reindex entire time intervals.
+</Warning>
+
+## Overwrite Existing Data
+
+Overwriting replaces existing data for a specific time range while leaving data outside that range untouched.
+
+### How Overwrites Work
+
+Druid's atomic update mechanism ensures:
+- Queries seamlessly flip from old to new data
+- Updates occur on a time-chunk-by-time-chunk basis
+- No partial updates are visible to queries
+- No downtime during data replacement
+
+<Note>
+While an overwrite job is ongoing for a time range, new ingestions for that same time range are queued. Ingestions for other time ranges proceed normally. Read-only queries continue using the existing data.
+</Note>
+
+### Native Batch Overwrite
+
+Use native batch ingestion with specific settings:
+
+```json
+{
+  "type": "index_parallel",
+  "spec": {
+    "dataSchema": {
+      "dataSource": "wikipedia",
+      "timestampSpec": {...},
+      "dimensionsSpec": {...},
+      "granularitySpec": {
+        "segmentGranularity": "day",
+        "queryGranularity": "hour",
+        "intervals": ["2023-01-01/2023-01-02"]
+      }
+    },
+    "ioConfig": {
+      "type": "index_parallel",
+      "inputSource": {...},
+      "appendToExisting": false
+    },
+    "tuningConfig": {...}
+  }
+}
+```
+
+**Key settings**:
+- `appendToExisting: false` - Overwrites existing data
+- `intervals` - Specifies which time range to replace
+
+See [Native Batch Ingestion](../ingestion/native-batch) for full configuration.
+
+### SQL REPLACE Overwrite
+
+Use SQL `REPLACE` statements to overwrite data:
+
+```sql
+REPLACE INTO wikipedia
+OVERWRITE ALL
+SELECT 
+  TIME_PARSE("timestamp") AS __time,
+  channel,
+  user,
+  added,
+  deleted
+FROM TABLE(
+  EXTERN(
+    '{"type":"http","uris":["https://example.com/data.json"]}',
+    '{"type":"json"}'
+  )
+)
+PARTITIONED BY DAY
+```
+
+Overwrite specific time range:
+
+```sql
+REPLACE INTO wikipedia
+OVERWRITE WHERE __time >= '2023-01-01' AND __time < '2023-02-01'
+SELECT 
+  TIME_PARSE("timestamp") AS __time,
+  channel,
+  updated_field
+FROM TABLE(...)
+PARTITIONED BY DAY
+```
+
+<Note>
+SQL REPLACE provides more flexible data transformations during overwrites compared to native batch.
+</Note>
+
+See [SQL REPLACE Reference](../multi-stage-query/reference#replace) for complete syntax.
+
+## Reindex Data
+
+Reindexing is an overwrite where the source of new data is the existing data itself. Use reindexing to:
+
+- Perform schema changes
+- Repartition data
+- Filter out unwanted data  
+- Enrich existing data
+- Apply new aggregations or rollup
+
+### Native Batch Reindex
+
+Use the Druid input source to read existing segments:
+
+```json
+{
+  "type": "index_parallel",
+  "spec": {
+    "dataSchema": {
+      "dataSource": "wikipedia",
+      "transformSpec": {
+        "filter": {
+          "type": "selector",
+          "dimension": "country",
+          "value": "United States"
+        },
+        "transforms": [
+          {
+            "type": "expression",
+            "name": "normalized_channel",
+            "expression": "lower(channel)"
+          }
+        ]
+      },
+      "dimensionsSpec": {
+        "dimensions": [
+          "channel",
+          "normalized_channel",
+          "user",
+          "country"
+        ]
+      },
+      "granularitySpec": {
+        "segmentGranularity": "day",
+        "queryGranularity": "hour",
+        "intervals": ["2023-01-01/2023-02-01"]
+      }
+    },
+    "ioConfig": {
+      "type": "index_parallel",
+      "inputSource": {
+        "type": "druid",
+        "dataSource": "wikipedia",
+        "interval": "2023-01-01/2023-02-01"
+      },
+      "appendToExisting": false
+    },
+    "tuningConfig": {
+      "type": "index_parallel",
+      "maxRowsPerSegment": 5000000
+    }
+  }
+}
+```
+
+**Key components**:
+- `inputSource.type: "druid"` - Reads from existing Druid datasource
+- `transformSpec` - Filters or modifies data during reindex
+- `dimensionsSpec` - Can add or remove dimensions
+
+See [Druid Input Source](../ingestion/input-sources#druid-input-source) for configuration.
+
+### SQL Reindex
+
+Use REPLACE with SELECT from the same datasource:
+
+```sql
+REPLACE INTO wikipedia
+OVERWRITE ALL
+SELECT
+  __time,
+  channel,
+  LOWER(channel) AS normalized_channel,
+  "user",
+  country,
+  added,
+  deleted
+FROM wikipedia
+WHERE country = 'United States'
+PARTITIONED BY DAY
+```
+
+Change granularity during reindex:
+
+```sql
+REPLACE INTO metrics_hourly
+OVERWRITE ALL  
+SELECT
+  TIME_FLOOR(__time, 'PT1H') AS __time,
+  server,
+  SUM(requests) AS total_requests,
+  AVG(latency) AS avg_latency
+FROM metrics_minutely
+GROUP BY 1, 2
+PARTITIONED BY DAY
+```
+
+<Note>
+Druid does not have UPDATE or ALTER TABLE statements. Use REPLACE with SELECT to modify existing data.
+</Note>
+
+## Update Rolled-Up Datasources
+
+For datasources with rollup enabled, you can effectively update data through appends:
+
+<Steps>
+  <Step title="Append New Rows">
+    Ingest rows with identical dimensions to existing rows.
+  </Step>
+  
+  <Step title="Automatic Query-Time Aggregation">
+    Queries automatically combine rows with matching dimensions using aggregation operators.
+  </Step>
+  
+  <Step title="Optional Physical Compaction">
+    Use compaction to physically combine matching rows and reduce storage.
+  </Step>
+</Steps>
+
+### Example
+
+Existing data:
+```
+__time          | country | page_views
+2023-01-01 00:00| US      | 100
+```
+
+Append new data:
+```
+__time          | country | page_views  
+2023-01-01 00:00| US      | 50
+```
+
+Query result (automatic aggregation):
+```
+__time          | country | page_views
+2023-01-01 00:00| US      | 150
+```
+
+<Note>
+Use [Compaction](./compaction) or [Automatic Compaction](./automatic-compaction) to physically combine matching rows and improve storage efficiency.
+</Note>
+
+## Update with Lookups
+
+For dimensions that change frequently, use lookups instead of reindexing:
+
+### When to Use Lookups
+
+- ID to name mappings (e.g., product_id → product_name)
+- Category assignments that change
+- Status codes to descriptions
+- Any dimension with values that update regularly
+
+### Example Lookup Configuration
+
+```json
+{
+  "product_names": {
+    "type": "map",
+    "map": {
+      "P001": "Widget Pro",
+      "P002": "Gadget Plus",
+      "P003": "Tool Max"
+    }
+  }
+}
+```
+
+Query with lookup:
+```sql
+SELECT
+  __time,
+  product_id,
+  LOOKUP(product_id, 'product_names') AS product_name,
+  SUM(revenue) AS total_revenue
+FROM sales
+GROUP BY 1, 2
+```
+
+**Benefits**:
+- Update mappings without reindexing data
+- Lower storage requirements (store IDs, not strings)
+- Centralized dimension value management
+
+See [Lookups](../querying/lookups) for configuration and management.
+
+## Concurrent Updates and Ingestion
+
+Manage conflicts between updates and ongoing ingestion:
+
+### Enable Concurrent Append and Replace
+
+Allow appends during replace operations:
+
+```json
+{
+  "type": "index_parallel",
+  "context": {
+    "useConcurrentLocks": true
+  },
+  "spec": {...}
+}
+```
+
+For SQL:
+```sql
+REPLACE INTO wikipedia
+OVERWRITE ALL
+SELECT * FROM ...
+PARTITIONED BY DAY
+CONTEXT(useConcurrentLocks=true)
+```
+
+See [Concurrent Append and Replace](../ingestion/concurrent-append-replace) for details.
+
+### Lock Priority
+
+By default:
+- Ingestion tasks have higher priority
+- Updates/compaction yield to new ingestion
+
+To change (advanced users only):
+```json
+{
+  "context": {
+    "priority": 50
+  }
+}
+```
+
+<Warning>
+Increasing update task priority can cause ingestion to fail or lag. Only change if you understand the implications.
+</Warning>
+
+## Common Update Patterns
+
+### Add New Dimension
+
+Reindex to add a computed dimension:
+
+```sql
+REPLACE INTO events  
+OVERWRITE ALL
+SELECT
+  __time,
+  user_id,
+  event_type,
+  CASE 
+    WHEN event_type IN ('purchase', 'add_to_cart') THEN 'conversion'
+    ELSE 'engagement'
+  END AS event_category
+FROM events
+PARTITIONED BY DAY
+```
+
+### Remove Dimension
+
+Reindex without the unwanted dimension:
+
+```sql
+REPLACE INTO logs
+OVERWRITE WHERE __time >= '2023-01-01'
+SELECT
+  __time,
+  server,
+  endpoint,
+  status_code
+  -- Omit 'deprecated_field'
+FROM logs  
+WHERE __time >= '2023-01-01'
+PARTITIONED BY DAY
+```
+
+### Change Metric Aggregation
+
+Reindex with different aggregation:
+
+```json
+{
+  "metricsSpec": [
+    {
+      "type": "longSum",
+      "name": "sum_value",
+      "fieldName": "value"
+    },
+    {
+      "type": "longMax",  
+      "name": "max_value",
+      "fieldName": "value"
+    }
+  ]
+}
+```
+
+### Filter Out Bad Data
+
+Reindex with filter to remove erroneous records:
+
+```json
+{
+  "transformSpec": {
+    "filter": {
+      "type": "and",
+      "fields": [
+        {
+          "type": "not",
+          "field": {"type": "selector", "dimension": "user_id", "value": "bot"}
+        },
+        {
+          "type": "bound",
+          "dimension": "value",
+          "lower": "0",
+          "lowerStrict": false
+        }
+      ]
+    }
+  }
+}
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Use Time Ranges" icon="calendar">
+    Update only the necessary time intervals to minimize data processing and lock duration.
+  </Card>
+  
+  <Card title="Test Transformations" icon="flask">
+    Validate transform logic on a small interval before applying to the full dataset.
+  </Card>
+  
+  <Card title="Consider Lookups" icon="map">
+    For frequently changing dimensions, use lookups instead of repeated reindexing.
+  </Card>
+  
+  <Card title="Monitor Locks" icon="lock">
+    Watch for lock conflicts between updates and ingestion in high-throughput scenarios.
+  </Card>
+</CardGroup>
+
+## Learn More
+
+<CardGroup cols={2}>
+  <Card title="Compaction" icon="compress" href="./compaction">
+    Optimize segments after updates
+  </Card>
+  
+  <Card title="Native Batch" icon="file-import" href="../ingestion/native-batch">
+    Native batch ingestion reference
+  </Card>
+  
+  <Card title="SQL REPLACE" icon="database" href="../multi-stage-query/reference#replace">
+    SQL-based data replacement
+  </Card>
+  
+  <Card title="Transform Spec" icon="wand-magic-sparkles" href="../ingestion/ingestion-spec#transformspec">
+    Filter and transform data during ingestion
+  </Card>
+</CardGroup>

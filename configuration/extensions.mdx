@@ -1,0 +1,203 @@
+---
+title: "Extensions"
+description: "Guide to Apache Druid extensions including core extensions, community extensions, and how to load them."
+---
+
+Druid implements an extension system that allows for adding functionality at runtime. Extensions are commonly used to add support for deep storages (like HDFS and S3), metadata stores (like MySQL and PostgreSQL), new aggregators, new input formats, and so on.
+
+Production clusters will generally use at least two extensions: one for deep storage and one for a metadata store. Many clusters will also use additional extensions.
+
+## Core Extensions
+
+Core extensions are maintained by Druid committers and bundled with the default Druid distribution.
+
+### Storage Extensions
+
+| Extension | Description | Documentation |
+|-----------|-------------|---------------|
+| druid-s3-extensions | Amazon S3 deep storage and S3 input source | [S3 Extension](https://druid.apache.org/docs/latest/development/extensions-core/s3.html) |
+| druid-hdfs-storage | HDFS deep storage | [HDFS Extension](https://druid.apache.org/docs/latest/development/extensions-core/hdfs.html) |
+| druid-azure-extensions | Microsoft Azure deep storage | [Azure Extension](https://druid.apache.org/docs/latest/development/extensions-core/azure.html) |
+| druid-google-extensions | Google Cloud Storage deep storage | [Google Extension](https://druid.apache.org/docs/latest/development/extensions-core/google.html) |
+| druid-cassandra-storage | Apache Cassandra deep storage | Community extension |
+
+### Metadata Storage Extensions
+
+| Extension | Description | Documentation |
+|-----------|-------------|---------------|
+| mysql-metadata-storage | MySQL metadata store | [MySQL Extension](https://druid.apache.org/docs/latest/development/extensions-core/mysql.html) |
+| postgresql-metadata-storage | PostgreSQL metadata store | [PostgreSQL Extension](https://druid.apache.org/docs/latest/development/extensions-core/postgresql.html) |
+
+<Note>
+The mysql-metadata-storage extension does not include the MySQL JDBC driver due to licensing. You must download and install it separately.
+</Note>
+
+### Data Format Extensions
+
+| Extension | Description | Documentation |
+|-----------|-------------|---------------|
+| druid-avro-extensions | Apache Avro data format support | [Avro Extension](https://druid.apache.org/docs/latest/development/extensions-core/avro.html) |
+| druid-orc-extensions | Apache ORC data format support | [ORC Extension](https://druid.apache.org/docs/latest/development/extensions-core/orc.html) |
+| druid-parquet-extensions | Apache Parquet data format support (requires druid-avro-extensions) | [Parquet Extension](https://druid.apache.org/docs/latest/development/extensions-core/parquet.html) |
+| druid-protobuf-extensions | Protobuf data format support | [Protobuf Extension](https://druid.apache.org/docs/latest/development/extensions-core/protobuf.html) |
+
+### Ingestion Extensions
+
+| Extension | Description | Documentation |
+|-----------|-------------|---------------|
+| druid-kafka-indexing-service | Supervised exactly-once Apache Kafka ingestion | [Kafka Ingestion](https://druid.apache.org/docs/latest/ingestion/kafka-ingestion.html) |
+| druid-kinesis-indexing-service | Supervised exactly-once Kinesis ingestion | [Kinesis Ingestion](https://druid.apache.org/docs/latest/ingestion/kinesis-ingestion.html) |
+| druid-kafka-extraction-namespace | Apache Kafka-based namespaced lookup | [Kafka Lookups](https://druid.apache.org/docs/latest/querying/kafka-extraction-namespace.html) |
+
+### Query and Aggregation Extensions
+
+| Extension | Description | Documentation |
+|-----------|-------------|---------------|
+| druid-datasketches | Approximate counts and set operations with Apache DataSketches | [DataSketches Extension](https://druid.apache.org/docs/latest/development/extensions-core/datasketches-extension.html) |
+| druid-bloom-filter | Bloom filters in Druid queries | [Bloom Filter](https://druid.apache.org/docs/latest/development/extensions-core/bloom-filter.html) |
+| druid-histogram | Approximate histograms and quantiles (deprecated, use DataSketches) | [Approximate Histograms](https://druid.apache.org/docs/latest/development/extensions-core/approximate-histograms.html) |
+| druid-stats | Statistics including variance and standard deviation | [Stats Extension](https://druid.apache.org/docs/latest/development/extensions-core/stats.html) |
+| druid-multi-stage-query | Multi-stage query architecture and task engine | [MSQ Extension](https://druid.apache.org/docs/latest/multi-stage-query/) |
+
+### Security Extensions
+
+| Extension | Description | Documentation |
+|-----------|-------------|---------------|
+| druid-basic-security | Basic HTTP authentication and role-based access control | [Basic Security](https://druid.apache.org/docs/latest/development/extensions-core/druid-basic-security.html) |
+| druid-kerberos | Kerberos authentication for Druid processes | [Kerberos](https://druid.apache.org/docs/latest/development/extensions-core/druid-kerberos.html) |
+| druid-pac4j | OpenID Connect authentication | [PAC4J Extension](https://druid.apache.org/docs/latest/development/extensions-core/druid-pac4j.html) |
+| simple-client-sslcontext | Simple SSLContext provider for internal HTTPS communication | [SSL Context](https://druid.apache.org/docs/latest/development/extensions-core/simple-client-sslcontext.html) |
+
+### Other Core Extensions
+
+| Extension | Description | Documentation |
+|-----------|-------------|---------------|
+| druid-lookups-cached-global | JVM-global eager caching for lookups with JDBC and URI implementations | [Cached Lookups](https://druid.apache.org/docs/latest/querying/lookups-cached-global.html) |
+| druid-lookups-cached-single | Per-lookup caching isolated from global pool | [Single Lookup Cache](https://druid.apache.org/docs/latest/development/extensions-core/druid-lookups.html) |
+| druid-catalog | Configure, update, and manage metadata in Druid's catalog | [Catalog](https://druid.apache.org/docs/latest/development/extensions-core/catalog.html) |
+| druid-kubernetes-extensions | Druid cluster deployment on Kubernetes without ZooKeeper | [Kubernetes Extension](https://druid.apache.org/docs/latest/development/extensions-core/kubernetes.html) |
+| druid-kubernetes-overlord-extensions | Launch tasks in Kubernetes without Middle Managers | [K8s Jobs](https://druid.apache.org/docs/latest/development/extensions-core/k8s-jobs.html) |
+| druid-aws-rds-extensions | AWS token-based access to AWS RDS DB clusters | [AWS RDS](https://druid.apache.org/docs/latest/development/extensions-core/druid-aws-rds.html) |
+
+## Community Extensions
+
+<Warning>
+Community extensions are not maintained by Druid committers. They may not have been as extensively tested as core extensions.
+</Warning>
+
+Community extensions can be downloaded using the `pull-deps` tool with the `-c` coordinate option:
+
+```bash
+java \
+  -cp "lib/*" \
+  -Ddruid.extensions.directory="extensions" \
+  -Ddruid.extensions.hadoopDependenciesDir="hadoop-dependencies" \
+  org.apache.druid.cli.Main tools pull-deps \
+  --no-default-hadoop \
+  -c "org.apache.druid.extensions.contrib:{EXTENSION_NAME}:{DRUID_VERSION}"
+```
+
+### Popular Community Extensions
+
+| Extension | Description | Documentation |
+|-----------|-------------|---------------|
+| druid-redis-cache | Redis-based cache implementation | [Redis Cache](https://druid.apache.org/docs/latest/development/extensions-contrib/redis-cache.html) |
+| druid-deltalake-extensions | Support for ingesting Delta Lake tables | [Delta Lake](https://druid.apache.org/docs/latest/development/extensions-contrib/delta-lake.html) |
+| druid-iceberg-extensions | Support for ingesting Iceberg tables | [Iceberg](https://druid.apache.org/docs/latest/development/extensions-contrib/iceberg.html) |
+| druid-compressed-bigdecimal | Compressed Big Decimal type | [Compressed BigDecimal](https://druid.apache.org/docs/latest/development/extensions-contrib/compressed-big-decimal.html) |
+| prometheus-emitter | Expose Druid metrics for Prometheus | [Prometheus Emitter](https://druid.apache.org/docs/latest/development/extensions-contrib/prometheus.html) |
+| graphite-emitter | Graphite metrics emitter | [Graphite Emitter](https://druid.apache.org/docs/latest/development/extensions-contrib/graphite.html) |
+| kafka-emitter | Kafka metrics emitter | [Kafka Emitter](https://druid.apache.org/docs/latest/development/extensions-contrib/kafka-emitter.html) |
+| druid-ranger-security | Access control through Apache Ranger | [Ranger Security](https://druid.apache.org/docs/latest/development/extensions-contrib/druid-ranger-security.html) |
+
+## Loading Extensions
+
+### Loading Core Extensions
+
+Apache Druid bundles all core extensions. To load them, add their names to the `druid.extensions.loadList` property in `common.runtime.properties`:
+
+```properties
+druid.extensions.loadList=["postgresql-metadata-storage", "druid-hdfs-storage"]
+```
+
+These extensions are located in the `extensions` directory of the distribution.
+
+<Tip>
+Make sure you're updating the correct `common.runtime.properties` file for your setup (quickstart vs. clustered configuration).
+</Tip>
+
+### Loading Community Extensions
+
+To load community extensions:
+
+1. **Download the extension** using `pull-deps` or directly from the distributor:
+
+```bash
+java \
+  -cp "lib/*" \
+  -Ddruid.extensions.directory="extensions" \
+  -Ddruid.extensions.hadoopDependenciesDir="hadoop-dependencies" \
+  org.apache.druid.cli.Main tools pull-deps \
+  --no-default-hadoop \
+  -c "com.example:druid-example-extension:1.0.0"
+```
+
+2. **Add the extension name** to `druid.extensions.loadList` in `common.runtime.properties`:
+
+```properties
+druid.extensions.loadList=["druid-example-extension"]
+```
+
+<Note>
+The Maven `groupId` for most community extensions is `org.apache.druid.extensions.contrib`. The `artifactId` is the extension name, and the version matches the Druid version.
+</Note>
+
+### Loading Extensions from Classpath
+
+If you add your extension jar to the classpath at runtime, Druid will load it into the system. However, this means you must ensure all dependency jars on the classpath are compatible.
+
+<Warning>
+Druid makes no provisions for class loader isolation when using this method. Ensure all jars on your classpath are mutually compatible.
+</Warning>
+
+## Extension Configuration Properties
+
+Extension behavior can be configured in `common.runtime.properties`:
+
+```properties
+# Directory containing extensions
+druid.extensions.directory=extensions
+
+# Hadoop dependencies directory  
+druid.extensions.hadoopDependenciesDir=hadoop-dependencies
+
+# List of extensions to load (null = load all, [] = load none)
+druid.extensions.loadList=["postgresql-metadata-storage", "druid-s3-extensions"]
+
+# Search main classloader for extensions
+druid.extensions.searchCurrentClassloader=true
+
+# Extensions prefer their own jars over Druid's bundled jars
+druid.extensions.useExtensionClassloaderFirst=false
+```
+
+For complete extension configuration details, see the [Configuration Reference](/configuration/index#extensions).
+
+## Creating Custom Extensions
+
+For information on how to create your own extension, see the [Druid Extension Development Guide](https://druid.apache.org/docs/latest/development/modules.html).
+
+## Promoting Community Extensions
+
+If you'd like a community extension to be promoted to core, or if you want to take on maintenance for a community extension, please post on [dev@druid.apache.org](https://lists.apache.org/list.html?dev@druid.apache.org).
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Configuration Reference" icon="sliders" href="/configuration/index">
+    Main configuration reference for all Druid properties
+  </Card>
+  <Card title="Extension Development" icon="code" href="https://druid.apache.org/docs/latest/development/modules.html">
+    Learn how to create custom extensions
+  </Card>
+</CardGroup>

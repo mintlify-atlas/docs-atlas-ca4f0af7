@@ -1,0 +1,260 @@
+---
+title: "SQL-based Ingestion API"
+description: "HTTP API for SQL-based batch ingestion using the multi-stage query engine"
+---
+
+<Note>
+This page describes SQL-based batch ingestion using the multi-stage query (MSQ) task engine, introduced in Druid 24.0. For a programmatic interface, use these APIs. For a user-friendly interface, use the Query view in the web console.
+</Note>
+
+The SQL-based ingestion API allows you to submit INSERT and REPLACE statements to the MSQ task engine for batch data ingestion.
+
+## Submit a query
+
+Submits SQL queries to the MSQ task engine for execution.
+
+<CodeGroup>
+```bash cURL
+curl --request POST \
+  'http://ROUTER_IP:ROUTER_PORT/druid/v2/sql/task' \
+  --header 'Content-Type: application/json' \
+  --data '{
+  "query": "INSERT INTO wikipedia\nSELECT\n  TIME_PARSE(\"timestamp\") AS __time,\n  *\nFROM TABLE(\n  EXTERN(\n    '\'''{\"type\": \"http\", \"uris\": [\"https://druid.apache.org/data/wikipedia.json.gz\"]}'\''',\n    '\'''{\"type\": \"json\"}'\''',\n    '\'''[{\"name\": \"timestamp\", \"type\": \"string\"}, {\"name\": \"page\", \"type\": \"string\"}]'\'''\n  )\n)\nPARTITIONED BY DAY"
+}'
+```
+
+```http HTTP
+POST /druid/v2/sql/task HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+Content-Type: application/json
+
+{
+  "query": "INSERT INTO wikipedia SELECT TIME_PARSE(\"timestamp\") AS __time, * FROM TABLE(EXTERN(...)) PARTITIONED BY DAY"
+}
+```
+</CodeGroup>
+
+<ParamField body="query" type="string" required>
+  SQL query string. Supports INSERT, REPLACE, and SELECT (experimental) statements.
+</ParamField>
+
+<ParamField body="context" type="object">
+  Query context parameters for the MSQ engine including:
+  - `maxNumTasks`: Maximum number of parallel tasks
+  - `finalizeAggregations`: Whether to finalize aggregations during ingestion
+  - `executionMode`: Set to "ASYNC" for asynchronous execution
+</ParamField>
+
+<ParamField body="parameters" type="array">
+  List of query parameters for parameterized queries.
+</ParamField>
+
+<ResponseField name="taskId" type="string">
+  Controller task ID for the submitted query.
+</ResponseField>
+
+<ResponseField name="state" type="string">
+  Initial state of the query (typically "RUNNING").
+</ResponseField>
+
+<ResponseExample>
+```json Submit Response
+{
+    "taskId": "query-431c4a18-9dde-4ec8-ab82-ec7fd17d5a4e",
+    "state": "RUNNING"
+}
+```
+</ResponseExample>
+
+## Get task status
+
+Retrieves the current status of a query task.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/task/query-3dc0c45d-34d7-4b15-86c9-cdb2d3ebfc4e/status"
+```
+
+```http HTTP
+GET /druid/indexer/v1/task/query-3dc0c45d-34d7-4b15-86c9-cdb2d3ebfc4e/status HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="taskId" type="string" required>
+  The controller task ID returned when submitting the query.
+</ParamField>
+
+<ResponseField name="statusCode" type="string">
+  Current status: RUNNING, SUCCESS, or FAILED.
+</ResponseField>
+
+<ResponseField name="duration" type="integer">
+  Task duration in milliseconds (-1 if still running).
+</ResponseField>
+
+<ResponseField name="location" type="object">
+  Host and port information where the task is running.
+</ResponseField>
+
+<ResponseExample>
+```json Status Response
+{
+    "task": "query-3dc0c45d-34d7-4b15-86c9-cdb2d3ebfc4e",
+    "status": {
+        "id": "query-3dc0c45d-34d7-4b15-86c9-cdb2d3ebfc4e",
+        "type": "query_controller",
+        "statusCode": "RUNNING",
+        "duration": -1,
+        "location": {
+            "host": "localhost",
+            "port": 8100
+        },
+        "dataSource": "wikipedia"
+    }
+}
+```
+</ResponseExample>
+
+## Get task report
+
+Retrieves the detailed task report including stages, statistics, and results.
+
+<CodeGroup>
+```bash cURL
+curl "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/task/query-3dc0c45d-34d7-4b15-86c9-cdb2d3ebfc4e/reports"
+```
+
+```http HTTP
+GET /druid/indexer/v1/task/query-3dc0c45d-34d7-4b15-86c9-cdb2d3ebfc4e/reports HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="taskId" type="string" required>
+  The controller task ID.
+</ParamField>
+
+<ResponseField name="multiStageQuery.payload.status" type="object">
+  Query execution status including state, start time, duration, and worker information.
+</ResponseField>
+
+<ResponseField name="multiStageQuery.payload.stages" type="array">
+  Array of query stage definitions and execution details.
+</ResponseField>
+
+<ResponseField name="multiStageQuery.payload.counters" type="object">
+  Execution counters for rows processed, bytes transferred, and other metrics.
+</ResponseField>
+
+<ResponseField name="multiStageQuery.payload.status.segmentLoadStatus" type="object">
+  Information about segment loading after ingestion completes.
+</ResponseField>
+
+### Report fields
+
+Key fields in the task report:
+
+| Field | Description |
+|-------|-------------|
+| `status.status` | RUNNING, SUCCESS, or FAILED |
+| `status.durationMs` | Milliseconds elapsed since start |
+| `status.workers` | Information about worker tasks |
+| `status.segmentLoadStatus.state` | Segment loading state: INIT, WAITING, SUCCESS, FAILED, TIMED_OUT |
+| `stages[].stageNumber` | Stage identifier |
+| `stages[].phase` | Stage phase: NEW, READING_INPUT, POST_READING, RESULTS_COMPLETE, FAILED |
+| `stages[].workerCount` | Number of parallel workers for the stage |
+| `counters` | Row and byte counters per stage and worker |
+
+## Cancel a query task
+
+Cancels a running query task.
+
+<CodeGroup>
+```bash cURL
+curl --request POST \
+  "http://ROUTER_IP:ROUTER_PORT/druid/indexer/v1/task/query-655efe33-781a-4c50-ae84-c2911b42d63c/shutdown"
+```
+
+```http HTTP
+POST /druid/indexer/v1/task/query-655efe33-781a-4c50-ae84-c2911b42d63c/shutdown HTTP/1.1
+Host: http://ROUTER_IP:ROUTER_PORT
+```
+</CodeGroup>
+
+<ParamField path="taskId" type="string" required>
+  The task ID to cancel.
+</ParamField>
+
+<ResponseExample>
+```json Cancel Response
+{
+    "task": "query-655efe33-781a-4c50-ae84-c2911b42d63c"
+}
+```
+</ResponseExample>
+
+## Query types
+
+The MSQ task engine supports:
+
+### INSERT statements
+
+Insert data into a new or existing datasource:
+
+```sql
+INSERT INTO datasource
+SELECT columns FROM source
+PARTITIONED BY granularity
+```
+
+### REPLACE statements
+
+Replace data in a datasource for specific time ranges:
+
+```sql
+REPLACE INTO datasource OVERWRITE ALL
+SELECT columns FROM source  
+PARTITIONED BY granularity
+```
+
+### SELECT statements (Experimental)
+
+Plain SELECT queries are supported experimentally. Results are written to the task report:
+
+```sql
+SELECT * FROM datasource WHERE condition
+```
+
+<Note>
+SELECT query results appear in `multiStageQuery.payload.results.results` as an array of arrays. The format is subject to change.
+</Note>
+
+## Context parameters
+
+Important MSQ context parameters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `maxNumTasks` | integer | Maximum number of worker tasks |
+| `finalizeAggregations` | boolean | Finalize aggregations during ingestion |
+| `rowsInMemory` | integer | Rows to buffer in memory |
+| `segmentSortOrder` | string | Column sort order for segments |
+| `maxParseExceptions` | integer | Maximum parse exceptions before failing |
+| `executionMode` | string | Set to "ASYNC" for async execution |
+
+For a complete list, see the [MSQ context parameters documentation](https://druid.apache.org/docs/latest/multi-stage-query/reference#context-parameters).
+
+## Error codes
+
+Common error codes in task reports:
+
+| Error Code | Description |
+|------------|-------------|
+| `TooManyWarnings` | Exceeded warning threshold |
+| `CannotParseExternalData` | Failed to parse input data |
+| `InsertCannotAllocateSegment` | Cannot allocate segment for INSERT |
+| `ColumnTypeNotSupported` | Unsupported column type |
+| `QueryNotSupported` | Query type not supported by MSQ engine |
+
+For all error codes, see the [MSQ error codes documentation](https://druid.apache.org/docs/latest/multi-stage-query/reference#error-codes).

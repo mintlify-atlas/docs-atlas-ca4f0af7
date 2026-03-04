@@ -1,0 +1,439 @@
+---
+title: Apache Kafka Ingestion
+description: Configure Apache Kafka streaming ingestion with supervisors for Apache Druid
+---
+
+When you enable the Kafka indexing service, you can configure supervisors on the Overlord to manage the creation and lifetime of Kafka indexing tasks. Kafka indexing tasks read events using Kafka partition and offset mechanism to guarantee exactly-once ingestion.
+
+<Info>
+You must be on Apache Kafka version 0.11.x or higher. For older versions, refer to the [Apache Kafka upgrade guide](https://kafka.apache.org/documentation/#upgrade).
+</Info>
+
+## Setup
+
+To use the Kafka indexing service, load the `druid-kafka-indexing-service` extension on both the Overlord and Middle Manager.
+
+See [Loading extensions](/configuration/extensions) for more information.
+
+## Supervisor Spec Configuration
+
+This section covers Kafka-specific configuration properties. For properties shared across all streaming methods, see [Supervisor spec](/ingestion/supervisor#supervisor-spec).
+
+<CodeGroup>
+
+```json Kafka Supervisor Spec
+{
+  "type": "kafka",
+  "spec": {
+    "dataSchema": {
+      "dataSource": "metrics-kafka",
+      "timestampSpec": {
+        "column": "timestamp",
+        "format": "auto"
+      },
+      "dimensionsSpec": {
+        "dimensions": [],
+        "dimensionExclusions": [
+          "timestamp",
+          "value"
+        ]
+      },
+      "metricsSpec": [
+        {
+          "name": "count",
+          "type": "count"
+        },
+        {
+          "name": "value_sum",
+          "fieldName": "value",
+          "type": "doubleSum"
+        },
+        {
+          "name": "value_min",
+          "fieldName": "value",
+          "type": "doubleMin"
+        },
+        {
+          "name": "value_max",
+          "fieldName": "value",
+          "type": "doubleMax"
+        }
+      ],
+      "granularitySpec": {
+        "type": "uniform",
+        "segmentGranularity": "HOUR",
+        "queryGranularity": "NONE"
+      }
+    },
+    "ioConfig": {
+      "topic": "metrics",
+      "inputFormat": {
+        "type": "json"
+      },
+      "consumerProperties": {
+        "bootstrap.servers": "localhost:9092"
+      },
+      "taskCount": 1,
+      "replicas": 1,
+      "taskDuration": "PT1H"
+    },
+    "tuningConfig": {
+      "type": "kafka",
+      "maxRowsPerSegment": 5000000
+    }
+  }
+}
+```
+
+</CodeGroup>
+
+## I/O Configuration
+
+Kafka-specific `ioConfig` properties:
+
+<ParamField path="topic" type="string" required>
+  The Kafka topic to read from. Once set, this value cannot be updated. To ingest from multiple topics, use `topicPattern` instead.
+</ParamField>
+
+<ParamField path="topicPattern" type="string">
+  Multiple Kafka topics to read from, passed as a regex pattern. See [Ingest from multiple topics](#ingest-from-multiple-topics).
+</ParamField>
+
+<ParamField path="consumerProperties" type="object" required>
+  A map of properties to pass to the Kafka consumer. Must include `bootstrap.servers` at minimum.
+</ParamField>
+
+<ParamField path="pollTimeout" type="long" default={100}>
+  The length of time to wait for the Kafka consumer to poll records, in milliseconds.
+</ParamField>
+
+<ParamField path="useEarliestOffset" type="boolean" default={false}>
+  If a supervisor manages a datasource for the first time, this determines whether to retrieve the earliest or latest offsets in Kafka.
+</ParamField>
+
+<ParamField path="idleConfig" type="object">
+  Defines how and when the Kafka supervisor can become idle. See [Idle configuration](#idle-configuration).
+</ParamField>
+
+### Ingest from Multiple Topics
+
+<Warning>
+Downgrading to a version older than 28.0.0 will cause ingestion to fail for datasources using multi-topic ingestion.
+</Warning>
+
+<Note>
+Migrating an existing supervisor from `topic` to `topicPattern` is not supported. You must suspend, reset offsets, and resubmit the supervisor.
+</Note>
+
+To ingest from multiple topics, use the `topicPattern` property with a regex pattern:
+
+```json
+{
+  "ioConfig": {
+    "topicPattern": "clicks|impressions",
+    // ... other config
+  }
+}
+```
+
+For topics starting with "metrics-":
+
+```json
+{
+  "ioConfig": {
+    "topicPattern": "metrics-.*",
+    // ... other config
+  }
+}
+```
+
+Druid automatically starts ingesting from new topics matching the regex pattern.
+
+### Consumer Properties
+
+Consumer properties control how a supervisor reads events from Kafka. You must include `bootstrap.servers` with a list of Kafka brokers:
+
+```
+<BROKER_1>:<PORT_1>,<BROKER_2>:<PORT_2>,...
+```
+
+<Accordion title="SSL/SASL Configuration">
+
+To enable SSL connections with SASL authentication, set environment variables for the Druid user on Overlord and Peon machines:
+
+```bash
+export KAFKA_JAAS_CONFIG="org.apache.kafka.common.security.plain.PlainLoginModule required username='accesskey' password='secret key';"
+export SSL_KEY_PASSWORD=mysecretkeypassword
+export SSL_KEYSTORE_PASSWORD=mysecretkeystorepassword
+export SSL_TRUSTSTORE_PASSWORD=mysecrettruststorepassword
+```
+
+Then reference these in the supervisor spec using the dynamic config provider:
+
+```json
+"consumerProperties": {
+  "bootstrap.servers": "localhost:9092",
+  "security.protocol": "SASL_SSL",
+  "sasl.mechanism": "PLAIN",
+  "ssl.keystore.location": "/opt/kafka/config/kafka01.keystore.jks",
+  "ssl.truststore.location": "/opt/kafka/config/kafka.truststore.jks",
+  "druid.dynamic.config.provider": {
+    "type": "environment",
+    "variables": {
+      "sasl.jaas.config": "KAFKA_JAAS_CONFIG",
+      "ssl.key.password": "SSL_KEY_PASSWORD",
+      "ssl.keystore.password": "SSL_KEYSTORE_PASSWORD",
+      "ssl.truststore.password": "SSL_TRUSTSTORE_PASSWORD"
+    }
+  }
+}
+```
+
+</Accordion>
+
+<Accordion title="Transaction Isolation">
+
+The `isolation.level` property determines how Druid reads transactional messages:
+
+- `read_uncommitted` (default): Reads all messages, including aborted transactions
+- `read_committed`: Reads only committed transactional messages
+
+```json
+"consumerProperties": {
+  "bootstrap.servers": "localhost:9092",
+  "isolation.level": "read_committed"
+}
+```
+
+</Accordion>
+
+### Idle Configuration
+
+<Warning>
+Idle state transitioning is experimental.
+</Warning>
+
+When the supervisor enters idle state, no new tasks are launched after current tasks complete. This can reduce costs for topics with sporadic data.
+
+<ParamField path="enabled" type="boolean" default={false}>
+  If `true`, the supervisor becomes idle when there's no data on the input topic for some time.
+</ParamField>
+
+<ParamField path="inactiveAfterMillis" type="long" default={600000}>
+  The supervisor becomes idle if all data has been read and no new data is published for this many milliseconds.
+</ParamField>
+
+<CodeGroup>
+
+```json Idle Configuration Example
+{
+  "type": "kafka",
+  "spec": {
+    "dataSchema": { /* ... */ },
+    "ioConfig": {
+      "topic": "metrics",
+      "inputFormat": { "type": "json" },
+      "consumerProperties": {
+        "bootstrap.servers": "localhost:9092"
+      },
+      "taskCount": 1,
+      "replicas": 1,
+      "taskDuration": "PT1H",
+      "idleConfig": {
+        "enabled": true,
+        "inactiveAfterMillis": 600000
+      }
+    },
+    "tuningConfig": { /* ... */ }
+  }
+}
+```
+
+</CodeGroup>
+
+## Kafka Input Format
+
+The `kafka` input format lets you parse Kafka metadata fields in addition to the payload value contents.
+
+### Supported Metadata Fields
+
+- **Kafka timestamp**: Event timestamp from Kafka
+- **Kafka topic**: Topic name
+- **Kafka headers**: Event headers
+- **Kafka key**: Message key
+
+### Configuration
+
+<ParamField path="valueFormat" type="object" required>
+  Define how to parse the payload value (e.g., `{ "type": "json" }`).
+</ParamField>
+
+<ParamField path="timestampColumnName" type="string" default="kafka.timestamp">
+  Custom name for the Kafka timestamp in the Druid schema.
+</ParamField>
+
+<ParamField path="topicColumnName" type="string" default="kafka.topic">
+  Custom name for the Kafka topic in the Druid schema. Useful when ingesting from multiple topics.
+</ParamField>
+
+<ParamField path="headerFormat" type="object" default="string">
+  Encoding format for Kafka headers. Supported values: `string`, `ISO-8859-1`, `US-ASCII`, `UTF-16`, `UTF-16BE`, `UTF-16LE`.
+</ParamField>
+
+<ParamField path="headerColumnPrefix" type="string" default="kafka.header.">
+  Prefix for Kafka header columns to avoid conflicts with payload columns.
+</ParamField>
+
+<ParamField path="keyFormat" type="object">
+  Input format to parse the key. Only the first value is used.
+</ParamField>
+
+<ParamField path="keyColumnName" type="string" default="kafka.key">
+  Name for the Kafka key column.
+</ParamField>
+
+<CodeGroup>
+
+```json Kafka Input Format Example
+{
+  "type": "kafka",
+  "spec": {
+    "ioConfig": {
+      "type": "kafka",
+      "consumerProperties": {
+        "bootstrap.servers": "localhost:9092"
+      },
+      "topic": "wiki-edits",
+      "inputFormat": {
+        "type": "kafka",
+        "valueFormat": {
+          "type": "json"
+        },
+        "headerFormat": {
+          "type": "string"
+        },
+        "keyFormat": {
+          "type": "tsv",
+          "findColumnsFromHeader": false,
+          "columns": ["x"]
+        }
+      },
+      "useEarliestOffset": true
+    },
+    "dataSchema": {
+      "dataSource": "wikiticker",
+      "timestampSpec": {
+        "column": "timestamp",
+        "format": "posix"
+      },
+      "dimensionsSpec": {
+        "useSchemaDiscovery": true,
+        "includeAllDimensions": true
+      },
+      "granularitySpec": {
+        "queryGranularity": "none",
+        "rollup": false,
+        "segmentGranularity": "day"
+      }
+    },
+    "tuningConfig": {
+      "type": "kafka"
+    }
+  }
+}
+```
+
+</CodeGroup>
+
+Example Kafka message:
+
+```json
+// Kafka timestamp: 1680795276351
+// Kafka topic: wiki-edits
+// Kafka headers: env=development, zone=z1
+// Kafka key: wiki-edit
+// Kafka payload value:
+{
+  "channel": "#sv.wikipedia",
+  "timestamp": "2016-06-27T00:00:11.080Z",
+  "page": "Salo Toraut",
+  "delta": 31,
+  "namespace": "Main"
+}
+```
+
+Parsed result:
+
+```json
+{
+  "channel": "#sv.wikipedia",
+  "timestamp": "2016-06-27T00:00:11.080Z",
+  "page": "Salo Toraut",
+  "delta": 31,
+  "namespace": "Main",
+  "kafka.timestamp": 1680795276351,
+  "kafka.topic": "wiki-edits",
+  "kafka.header.env": "development",
+  "kafka.header.zone": "z1",
+  "kafka.key": "wiki-edit"
+}
+```
+
+## Tuning Configuration
+
+Kafka-specific `tuningConfig` properties:
+
+<ParamField path="numPersistThreads" type="integer" default={1}>
+  Number of threads to use to create and persist incremental segments on disk. Increase for datasources with hundreds or thousands of columns.
+</ParamField>
+
+For shared tuning properties, see [Supervisor tuning configuration](/ingestion/supervisor#tuning-configuration).
+
+## Deployment Notes
+
+Druid assigns Kafka partitions to each Kafka indexing task. A task writes events from Kafka into a single segment until reaching:
+
+- `maxRowsPerSegment`
+- `maxTotalRows`
+- `intermediateHandoffPeriod`
+
+At this point, the task creates a new partition for subsequent events.
+
+### Incremental Hand-offs
+
+Tasks perform incremental hand-offs, so segments become available as they're ready. When limits are reached:
+
+1. Task hands off all segments
+2. Creates a new set of segments
+3. Continues ingestion
+
+This allows tasks to run for longer durations without accumulating old segments locally.
+
+### Small Segments
+
+Small segments may still be produced. For example:
+
+- Task duration: 4 hours
+- Segment granularity: HOUR
+- Supervisor started: 9:10
+
+At 13:10, new tasks start. Events for 13:00-14:00 may split across old and new tasks, creating small segments.
+
+To merge small segments, schedule re-indexing tasks with a different segment granularity. See [Segment size optimization](/operations/segment-optimization).
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Supervisor API" icon="code" href="/api-reference/supervisor-api">
+    Manage and monitor supervisors via API
+  </Card>
+  <Card title="Supervisor Reference" icon="book" href="/ingestion/supervisor">
+    Supervisor status and capacity planning
+  </Card>
+  <Card title="Kafka Tutorial" icon="graduation-cap" href="/tutorials/tutorial-kafka">
+    Load data from Apache Kafka
+  </Card>
+  <Card title="Data Formats" icon="file-lines" href="/ingestion/data-formats">
+    Supported input formats
+  </Card>
+</CardGroup>
